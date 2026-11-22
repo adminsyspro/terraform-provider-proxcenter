@@ -153,7 +153,7 @@ func TestAccVMDriftAndDRS(t *testing.T) {
 		{
 			// Someone changes the cores in the UI: the plan shows it.
 			PreConfig: func() {
-				if err := accClient(t).UpdateConfig(context.Background(), os.Getenv("PROXCENTER_TEST_CONNECTION"), vm.node, vm.vmid, map[string]any{"cores": 3}); err != nil {
+				if err := accClient(t).UpdateConfig(context.Background(), os.Getenv("PROXCENTER_TEST_CONNECTION"), vm.node, client.GuestQEMU, vm.vmid, map[string]any{"cores": 3}); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -258,7 +258,7 @@ func TestAccVMDeletedOutsideIsRecreated(t *testing.T) {
 			{Config: cfg, Check: capture("proxcenter_vm.gone", &vm)},
 			{
 				PreConfig: func() {
-					if err := accClient(t).DeleteVM(context.Background(), os.Getenv("PROXCENTER_TEST_CONNECTION"), vm.node, vm.vmid); err != nil {
+					if err := accClient(t).DeleteVM(context.Background(), os.Getenv("PROXCENTER_TEST_CONNECTION"), vm.node, client.GuestQEMU, vm.vmid); err != nil {
 						t.Fatal(err)
 					}
 				},

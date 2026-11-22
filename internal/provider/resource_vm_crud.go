@@ -120,7 +120,7 @@ func (r *vmResource) Create(ctx context.Context, req resource.CreateRequest, res
 		return
 	}
 	if plan.PowerState.ValueString() == "running" {
-		if err := r.client.Power(ctx, conn, node, vmid, "start"); err != nil {
+		if err := r.client.Power(ctx, conn, node, client.GuestQEMU, vmid, "start"); err != nil {
 			resp.Diagnostics.AddError("Starting the new VM failed", err.Error())
 			return
 		}
@@ -242,7 +242,7 @@ func deploymentMayHaveCreated(step string) bool {
 func (r *vmResource) ownVM(ctx context.Context, conn, node string, vmid int, name string) bool {
 	probe, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
-	cfg, err := r.client.GetConfig(probe, conn, node, vmid)
+	cfg, err := r.client.GetConfig(probe, conn, node, client.GuestQEMU, vmid)
 	return err == nil && cfg.Data["name"] == name
 }
 
@@ -301,7 +301,7 @@ func (r *vmResource) createFromClone(ctx context.Context, plan vmModel, configTa
 			return 0, "", false, fmt.Errorf("getting a VMID: %w", err)
 		}
 		req.NewID = vmid
-		upid, taskNode, err := r.client.StartClone(ctx, conn, src.Node, srcID, req)
+		upid, taskNode, err := r.client.StartClone(ctx, conn, src.Node, client.GuestQEMU, srcID, req)
 		if err != nil {
 			// Refused: Proxmox created nothing, whatever holds that VMID.
 			if auto && client.IsVMIDClash(err) {
@@ -327,7 +327,7 @@ func (r *vmResource) createFromClone(ctx context.Context, plan vmModel, configTa
 func (r *vmResource) waitProvisioning(ctx context.Context, conn, node string, vmid int) error {
 	wait := pollFirst
 	for {
-		cfg, err := r.client.GetConfig(ctx, conn, node, vmid)
+		cfg, err := r.client.GetConfig(ctx, conn, node, client.GuestQEMU, vmid)
 		if err != nil {
 			return fmt.Errorf("reading the clone: %w", err)
 		}
@@ -348,7 +348,7 @@ func (r *vmResource) waitProvisioning(ctx context.Context, conn, node string, vm
 // configureCreated brings a new VM from what the deployment or the clone
 // gave to the described config: extra disks and NICs, hardware, cloud-init.
 func (r *vmResource) configureCreated(ctx context.Context, conn, node string, vmid int, plan vmModel, password string) error {
-	cfg, err := r.client.GetConfig(ctx, conn, node, vmid)
+	cfg, err := r.client.GetConfig(ctx, conn, node, client.GuestQEMU, vmid)
 	if err != nil {
 		return err
 	}
@@ -393,17 +393,17 @@ func onlySlots[T any](have, want []T, slot func(T) string) []T {
 // apply writes the config keys in one call, then moves and grows disks.
 func (r *vmResource) apply(ctx context.Context, conn, node string, vmid int, c vmconfig.Changes) error {
 	if len(c.Keys) > 0 {
-		if err := r.client.UpdateConfig(ctx, conn, node, vmid, c.Keys); err != nil {
+		if err := r.client.UpdateConfig(ctx, conn, node, client.GuestQEMU, vmid, c.Keys); err != nil {
 			return err
 		}
 	}
 	for _, m := range c.Moves {
-		if err := r.client.MoveDisk(ctx, conn, node, vmid, m.Disk, m.Storage); err != nil {
+		if err := r.client.MoveDisk(ctx, conn, node, client.GuestQEMU, vmid, m.Disk, m.Storage); err != nil {
 			return fmt.Errorf("moving disk %s to %s: %w", m.Disk, m.Storage, err)
 		}
 	}
 	for _, rs := range c.Resizes {
-		if err := r.client.ResizeDisk(ctx, conn, node, vmid, rs.Disk, rs.Size); err != nil {
+		if err := r.client.ResizeDisk(ctx, conn, node, client.GuestQEMU, vmid, rs.Disk, rs.Size); err != nil {
 			return fmt.Errorf("growing disk %s to %s: %w", rs.Disk, rs.Size, err)
 		}
 	}
@@ -449,14 +449,14 @@ func (r *vmResource) Delete(ctx context.Context, req resource.DeleteRequest, res
 			return
 		}
 	}
-	err := r.client.DeleteVM(ctx, conn, node, vmid)
+	err := r.client.DeleteVM(ctx, conn, node, client.GuestQEMU, vmid)
 	if err != nil && mustStopFirst(err) {
 		// The list ProxCenter reports power from may lag: stop, then retry.
 		if err := r.stop(ctx, conn, node, vmid, force); err != nil {
 			resp.Diagnostics.AddError("Stopping the VM failed", err.Error())
 			return
 		}
-		err = r.client.DeleteVM(ctx, conn, node, vmid)
+		err = r.client.DeleteVM(ctx, conn, node, client.GuestQEMU, vmid)
 	}
 	if err != nil && !client.IsNotFound(err) {
 		resp.Diagnostics.AddError("Deleting the VM failed", err.Error())
@@ -467,7 +467,7 @@ func (r *vmResource) Delete(ctx context.Context, req resource.DeleteRequest, res
 // status route; a ProxCenter without that route falls back to the cached
 // list, which lags a power change by up to 30 s. "" when neither knows.
 func (r *vmResource) powerStatus(ctx context.Context, conn, node string, vmid int) string {
-	if status, err := r.client.GuestStatus(ctx, conn, node, vmid); err == nil && status != "" && status != "unknown" {
+	if status, err := r.client.GuestStatus(ctx, conn, node, client.GuestQEMU, vmid); err == nil && status != "" && status != "unknown" {
 		return status
 	}
 	if sum, err := r.client.CachedVM(ctx, conn, vmid); err == nil && sum != nil {
@@ -480,36 +480,36 @@ func (r *vmResource) powerStatus(ctx context.Context, conn, node string, vmid in
 // booting, one without ACPI support) is hard stopped and started again only
 // when force_stop allows it.
 func (r *vmResource) reboot(ctx context.Context, conn, node string, vmid int, force bool) error {
-	err := r.client.Power(ctx, conn, node, vmid, "reboot")
+	err := r.client.Power(ctx, conn, node, client.GuestQEMU, vmid, "reboot")
 	if err == nil {
 		return nil
 	}
 	if !force {
 		return fmt.Errorf("the VM did not reboot by ACPI (%w); set force_stop = true to let the provider hard stop and start it", err)
 	}
-	if err := r.client.Power(ctx, conn, node, vmid, "stop"); err != nil {
+	if err := r.client.Power(ctx, conn, node, client.GuestQEMU, vmid, "stop"); err != nil {
 		return err
 	}
-	return r.client.Power(ctx, conn, node, vmid, "start")
+	return r.client.Power(ctx, conn, node, client.GuestQEMU, vmid, "start")
 }
 
 // stop shuts the VM down by ACPI, then hard stops it only when allowed.
 func (r *vmResource) stop(ctx context.Context, conn, node string, vmid int, force bool) error {
-	err := r.client.Power(ctx, conn, node, vmid, "shutdown")
+	err := r.client.Power(ctx, conn, node, client.GuestQEMU, vmid, "shutdown")
 	if err == nil || client.IsNotFound(err) {
 		return nil
 	}
 	if !force {
 		return fmt.Errorf("the VM did not stop after an ACPI shutdown (%w); set force_stop = true to hard stop it", err)
 	}
-	return r.client.Power(ctx, conn, node, vmid, "stop")
+	return r.client.Power(ctx, conn, node, client.GuestQEMU, vmid, "stop")
 }
 
 // readInto refreshes prior from the API. Only what prior describes is read
 // back (disks and NICs by slot), so nothing the user leaves out drifts;
 // importing reads everything. found is false only on a 404 of the config.
 func (r *vmResource) readInto(ctx context.Context, conn, node string, vmid int, prior vmModel, importing bool) (vmModel, bool, error) {
-	cfg, err := r.client.GetConfig(ctx, conn, node, vmid)
+	cfg, err := r.client.GetConfig(ctx, conn, node, client.GuestQEMU, vmid)
 	if client.IsNotFound(err) {
 		return prior, false, nil
 	}
@@ -722,7 +722,7 @@ func (r *vmResource) Update(ctx context.Context, req resource.UpdateRequest, res
 	defer cancel()
 	conn, node, vmid := state.ConnectionID.ValueString(), state.Node.ValueString(), int(state.VMID.ValueInt64())
 
-	cfg, err := r.client.GetConfig(ctx, conn, node, vmid)
+	cfg, err := r.client.GetConfig(ctx, conn, node, client.GuestQEMU, vmid)
 	if err != nil {
 		resp.Diagnostics.AddError("Reading the VM failed", err.Error())
 		return
@@ -753,7 +753,7 @@ func (r *vmResource) Update(ctx context.Context, req resource.UpdateRequest, res
 	}
 	switch {
 	case wantRunning && !wasRunning:
-		err = r.client.Power(ctx, conn, node, vmid, "start")
+		err = r.client.Power(ctx, conn, node, client.GuestQEMU, vmid, "start")
 	case !wantRunning && wasRunning:
 		err = r.stop(ctx, conn, node, vmid, plan.ForceStop.ValueBool())
 	}
@@ -795,7 +795,7 @@ func passwordChanged(state, plan vmModel) bool {
 // handlePending reboots a running VM whose change waits for a reboot when
 // reboot_on_change is set, and warns otherwise.
 func (r *vmResource) handlePending(ctx context.Context, conn, node string, vmid int, plan vmModel, resp *resource.UpdateResponse) {
-	cfg, err := r.client.GetConfig(ctx, conn, node, vmid)
+	cfg, err := r.client.GetConfig(ctx, conn, node, client.GuestQEMU, vmid)
 	if err != nil {
 		resp.Diagnostics.AddError("Reading the VM failed", err.Error())
 		return

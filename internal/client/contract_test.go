@@ -24,6 +24,7 @@ var usedRoutes = []struct{ method, path, operationID string }{
 	{"post", "/api/v1/connections/{id}/guests/{type}/{node}/{vmid}/{action}", "vm-power"},
 	{"delete", "/api/v1/connections/{id}/guests/{type}/{node}/{vmid}", "vm-delete"},
 	{"get", "/api/v1/vms", "vms-list"},
+	{"post", "/api/v1/connections/{id}/guests/{type}/{node}", "vm-create"},
 	{"get", "/api/v1/vdcs", "vdcs-list"},
 	{"get", "/api/v1/templates/catalog", "templates-catalog"},
 	{"get", "/api/v1/templates/blueprints", "templates-blueprints"},

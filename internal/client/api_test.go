@@ -156,7 +156,7 @@ func TestCloneWaitsItsTask(t *testing.T) {
 	}})
 	c := newTestClient(t, srv.URL)
 	recordSleeps(c)
-	if err := c.Clone(context.Background(), "conn1", "pve1", 9000, CloneRequest{NewID: 9106, Name: "web-02", Full: true, Target: "pve2"}); err != nil {
+	if err := c.Clone(context.Background(), "conn1", "pve1", GuestQEMU, 9000, CloneRequest{NewID: 9106, Name: "web-02", Full: true, Target: "pve2"}); err != nil {
 		t.Fatal(err)
 	}
 	if tasks == 0 || got["newid"] != float64(9106) || got["full"] != true || got["target"] != "pve2" {
@@ -168,7 +168,7 @@ func TestGetConfigSplitsPendingAndProvisioning(t *testing.T) {
 	srv := apiServer(t, route{http.MethodGet, "/api/v1/connections/conn1/guests/qemu/pve1/9106/config", func(w http.ResponseWriter, _ *http.Request, _ map[string]any) {
 		write(w, 200, `{"data":{"cores":4,"memory":"8192","pending":{"cores":8}},"movedTo":"pve3","provisioning":{"state":"running","failures":[]}}`)
 	}})
-	cfg, err := newTestClient(t, srv.URL).GetConfig(context.Background(), "conn1", "pve1", 9106)
+	cfg, err := newTestClient(t, srv.URL).GetConfig(context.Background(), "conn1", "pve1", GuestQEMU, 9106)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -184,7 +184,7 @@ func TestGetConfigNotFound(t *testing.T) {
 	srv := apiServer(t, route{http.MethodGet, "/api/v1/connections/conn1/guests/qemu/pve1/9106/config", func(w http.ResponseWriter, _ *http.Request, _ map[string]any) {
 		write(w, 404, `{"error":"VM not found"}`)
 	}})
-	_, err := newTestClient(t, srv.URL).GetConfig(context.Background(), "conn1", "pve1", 9106)
+	_, err := newTestClient(t, srv.URL).GetConfig(context.Background(), "conn1", "pve1", GuestQEMU, 9106)
 	if !IsNotFound(err) {
 		t.Fatalf("got %v", err)
 	}
@@ -200,7 +200,7 @@ func TestUpdateConfigWaits202Pending(t *testing.T) {
 	}})
 	c := newTestClient(t, srv.URL)
 	recordSleeps(c)
-	if err := c.UpdateConfig(context.Background(), "conn1", "pve1", 9106, map[string]any{"cores": 8}); err != nil {
+	if err := c.UpdateConfig(context.Background(), "conn1", "pve1", GuestQEMU, 9106, map[string]any{"cores": 8}); err != nil {
 		t.Fatal(err)
 	}
 	if tasks != 1 {
@@ -213,7 +213,7 @@ func TestUpdateConfig200NoTask(t *testing.T) {
 	srv := taskAware(t, "pve1", &tasks, route{http.MethodPut, "/api/v1/connections/conn1/guests/qemu/pve1/9106/config", func(w http.ResponseWriter, _ *http.Request, _ map[string]any) {
 		write(w, 200, `{"data":null,"success":true}`)
 	}})
-	if err := newTestClient(t, srv.URL).UpdateConfig(context.Background(), "conn1", "pve1", 9106, map[string]any{"name": "x"}); err != nil {
+	if err := newTestClient(t, srv.URL).UpdateConfig(context.Background(), "conn1", "pve1", GuestQEMU, 9106, map[string]any{"name": "x"}); err != nil {
 		t.Fatal(err)
 	}
 	if tasks != 0 {
@@ -247,16 +247,16 @@ func TestResizeMovePowerDeleteWait(t *testing.T) {
 	c := newTestClient(t, srv.URL)
 	recordSleeps(c)
 	ctx := context.Background()
-	if err := c.ResizeDisk(ctx, "conn1", "pve1", 9106, "scsi0", "80G"); err != nil {
+	if err := c.ResizeDisk(ctx, "conn1", "pve1", GuestQEMU, 9106, "scsi0", "80G"); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.MoveDisk(ctx, "conn1", "pve1", 9106, "scsi0", "ceph-silver"); err != nil {
+	if err := c.MoveDisk(ctx, "conn1", "pve1", GuestQEMU, 9106, "scsi0", "ceph-silver"); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.Power(ctx, "conn1", "pve1", 9106, "start"); err != nil {
+	if err := c.Power(ctx, "conn1", "pve1", GuestQEMU, 9106, "start"); err != nil {
 		t.Fatal(err)
 	}
-	if err := c.DeleteVM(ctx, "conn1", "pve1", 9106); err != nil {
+	if err := c.DeleteVM(ctx, "conn1", "pve1", GuestQEMU, 9106); err != nil {
 		t.Fatal(err)
 	}
 	if tasks != 4 || resizeBody != "scsi0=80G" {
@@ -331,7 +331,7 @@ func TestWriteInvalidatesVMList(t *testing.T) {
 	recordSleeps(c)
 	ctx := context.Background()
 	_, _ = c.CachedVM(ctx, "conn1", 9106)
-	if err := c.Power(ctx, "conn1", "pve1", 9106, "shutdown"); err != nil {
+	if err := c.Power(ctx, "conn1", "pve1", GuestQEMU, 9106, "shutdown"); err != nil {
 		t.Fatal(err)
 	}
 	_, _ = c.CachedVM(ctx, "conn1", 9106)
