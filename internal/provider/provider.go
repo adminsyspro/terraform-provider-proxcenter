@@ -107,7 +107,10 @@ func (p *proxcenterProvider) Resources(_ context.Context) []func() resource.Reso
 }
 
 func (p *proxcenterProvider) DataSources(_ context.Context) []func() datasource.DataSource {
-	return nil
+	return []func() datasource.DataSource{
+		newVdcDataSource, newVdcsDataSource, newImagesDataSource, newBlueprintsDataSource,
+		newStoragesDataSource, newVnetsDataSource, newVmsDataSource,
+	}
 }
 
 func stringOrEnv(v types.String, env string) string {
