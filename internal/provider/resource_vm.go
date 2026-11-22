@@ -218,7 +218,7 @@ func (r *vmResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequ
 	}
 	changed := false
 	for i := range plan.Networks {
-		if plan.Networks[i].Slot.IsUnknown() {
+		if plan.Networks[i].Slot.IsUnknown() || plan.Networks[i].Slot.IsNull() {
 			plan.Networks[i].Slot = types.StringValue("net" + strconv.Itoa(i))
 			changed = true
 		}
@@ -248,6 +248,9 @@ func (r *vmResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequ
 			plan.CloudInit.IPAddress = types.StringUnknown()
 			changed = true
 		}
+		if unknownNewComputed(&plan, state) {
+			changed = true
+		}
 	}
 	if changed && !resp.Diagnostics.HasError() {
 		resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
@@ -265,6 +268,33 @@ func (r *vmResource) planCreate(plan *vmModel, configTargetNode types.String, re
 		resp.Diagnostics.AddAttributeError(path.Root("target_node"), "Missing target_node",
 			"A VM from the catalogue needs target_node: pick one of the nodes of its vDC (data.proxcenter_vdc.<name>.nodes).")
 	}
+}
+
+// unknownNewComputed marks unknown the computed values of what an update
+// adds (a NIC, a cloud_init block): the framework plans them null, and the
+// API is what sets them.
+func unknownNewComputed(plan *vmModel, state vmModel) bool {
+	changed := false
+	for i := len(state.Networks); i < len(plan.Networks); i++ {
+		n := &plan.Networks[i]
+		if n.Firewall.IsNull() {
+			n.Firewall, changed = types.BoolUnknown(), true
+		}
+		if n.MACAddress.IsNull() {
+			n.MACAddress, changed = types.StringUnknown(), true
+		}
+	}
+	if ci := plan.CloudInit; ci != nil && state.CloudInit == nil {
+		for _, v := range []*types.String{&ci.User, &ci.IP, &ci.Gateway, &ci.Nameserver, &ci.SearchDomain, &ci.IPAddress} {
+			if v.IsNull() {
+				*v, changed = types.StringUnknown(), true
+			}
+		}
+		if ci.SSHKeys.IsNull() {
+			ci.SSHKeys, changed = types.ListUnknown(types.StringType), true
+		}
+	}
+	return changed
 }
 
 // addressMayChange tells whether the address the VM gets can differ after

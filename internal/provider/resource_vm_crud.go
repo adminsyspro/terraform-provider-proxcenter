@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -426,7 +427,17 @@ func (r *vmResource) readInto(ctx context.Context, conn, node string, vmid int, 
 	if cfg.MovedTo != "" {
 		node = cfg.MovedTo
 	}
-	vm, err := vmconfig.Parse(cfg.Data)
+	// A change waiting for a reboot is accepted: read it as the VM's value.
+	merged := make(map[string]any, len(cfg.Data)+len(cfg.Pending))
+	for k, v := range cfg.Data {
+		merged[k] = v
+	}
+	for k, v := range cfg.Pending {
+		if k != "delete" {
+			merged[k] = v
+		}
+	}
+	vm, err := vmconfig.Parse(merged)
 	if err != nil {
 		return prior, false, err
 	}
@@ -569,8 +580,108 @@ func nullUnknowns(m *vmModel) {
 	}
 }
 
-func (r *vmResource) Update(_ context.Context, _ resource.UpdateRequest, resp *resource.UpdateResponse) {
-	resp.Diagnostics.AddError("Not implemented", "update")
+func (r *vmResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan, state vmModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	var ciConfig *cloudInitModel
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("cloud_init"), &ciConfig)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	timeout, diags := plan.Timeouts.Update(ctx, 20*time.Minute)
+	resp.Diagnostics.Append(diags...)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	conn, node, vmid := state.ConnectionID.ValueString(), state.Node.ValueString(), int(state.VMID.ValueInt64())
+
+	cfg, err := r.client.GetConfig(ctx, conn, node, vmid)
+	if err != nil {
+		resp.Diagnostics.AddError("Reading the VM failed", err.Error())
+		return
+	}
+	if cfg.MovedTo != "" {
+		node = cfg.MovedTo
+	}
+	changes, err := vmconfig.ConfigChanges(modelToVM(state), modelToVM(plan), cfg.Data)
+	if err != nil {
+		resp.Diagnostics.AddError("Change refused", err.Error())
+		return
+	}
+	if passwordChanged(state, plan) && ciConfig != nil && ciConfig.PasswordWO.ValueString() != "" {
+		changes.Keys["cipassword"] = ciConfig.PasswordWO.ValueString()
+	}
+	if err := r.apply(ctx, conn, node, vmid, changes); err != nil {
+		resp.Diagnostics.AddError("Updating the VM failed", err.Error())
+		return
+	}
+
+	wantRunning := plan.PowerState.ValueString() == "running"
+	wasRunning := state.PowerState.ValueString() == "running"
+	if !changes.Empty() && wasRunning && wantRunning {
+		r.handlePending(ctx, conn, node, vmid, plan, resp)
+		if resp.Diagnostics.HasError() {
+			return
+		}
+	}
+	switch {
+	case wantRunning && !wasRunning:
+		err = r.client.Power(ctx, conn, node, vmid, "start")
+	case !wantRunning && wasRunning:
+		err = r.stop(ctx, conn, node, vmid, plan.ForceStop.ValueBool())
+	}
+	if err != nil {
+		resp.Diagnostics.AddError("Changing the power state failed", err.Error())
+		return
+	}
+
+	final, found, err := r.readInto(ctx, conn, node, vmid, plan, false)
+	if err != nil || !found {
+		resp.Diagnostics.AddError("Reading the VM failed", errText(err, "the VM is no longer found"))
+		return
+	}
+	final.PowerState = plan.PowerState
+	final.TargetNode = state.TargetNode
+	nullUnknowns(&final)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &final)...)
+}
+
+func passwordChanged(state, plan vmModel) bool {
+	if plan.CloudInit == nil {
+		return false
+	}
+	old := types.Int64Null()
+	if state.CloudInit != nil {
+		old = state.CloudInit.PasswordWOVersion
+	}
+	return !plan.CloudInit.PasswordWOVersion.IsNull() && !plan.CloudInit.PasswordWOVersion.Equal(old)
+}
+
+// handlePending reboots a running VM whose change waits for a reboot when
+// reboot_on_change is set, and warns otherwise.
+func (r *vmResource) handlePending(ctx context.Context, conn, node string, vmid int, plan vmModel, resp *resource.UpdateResponse) {
+	cfg, err := r.client.GetConfig(ctx, conn, node, vmid)
+	if err != nil {
+		resp.Diagnostics.AddError("Reading the VM failed", err.Error())
+		return
+	}
+	if !vmconfig.NeedsReboot(cfg.Pending) {
+		return
+	}
+	keys := make([]string, 0, len(cfg.Pending))
+	for k := range cfg.Pending {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	if plan.RebootOnChange.ValueBool() {
+		if err := r.client.Power(ctx, conn, node, vmid, "reboot"); err != nil {
+			resp.Diagnostics.AddError("Rebooting the VM failed", err.Error())
+		}
+		return
+	}
+	resp.Diagnostics.AddWarning("Reboot required",
+		fmt.Sprintf("Proxmox applies the change of %s (%s) at the next reboot of the VM. Set reboot_on_change = true to let the provider reboot it.",
+			plan.Name.ValueString(), strings.Join(keys, ", ")))
 }
 
 // ImportState takes <connection_id>/<vmid>; the node comes from the VM list

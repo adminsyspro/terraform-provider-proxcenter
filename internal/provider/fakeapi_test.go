@@ -154,7 +154,7 @@ func (f *fakeAPI) noVMsBut(keep ...int) func(*terraform.State) error {
 	}
 }
 
-func (f *fakeAPI) vm(vmid int) *fakeVM {
+func (f *fakeAPI) vm(vmid int) *fakeVM { //nolint:unparam // every test so far reads the first VMID
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.vms[vmid]
