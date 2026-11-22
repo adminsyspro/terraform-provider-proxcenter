@@ -73,7 +73,7 @@ func TestLXCCreateFromTemplate(t *testing.T) {
 					check(func() error {
 						b := f.lastBody("POST /api/v1/connections/conn1/guests/lxc/pve1")
 						want := map[string]any{"hostname": "ct-web", "ostemplate": "local:vztmpl/alpine-3.24-default_20261105_amd64.tar.xz",
-							"rootfs": "ceph-gold:8", "mp0": "ceph-gold:10,mp=/data", "net0": "name=eth0,bridge=vmbr0,ip=dhcp,tag=150",
+							"rootfs": "ceph-gold:8", "mp0": "ceph-gold:10,mp=/data,backup=1", "net0": "name=eth0,bridge=vmbr0,ip=dhcp,tag=150",
 							"cores": float64(2), "memory": float64(1024), "swap": float64(512), "unprivileged": float64(1), "features": "nesting=1",
 							"ssh-public-keys": "ssh-ed25519 AAAA ops@host", "password": "s3cret", "start": float64(0)}
 						for k, v := range want {
@@ -157,23 +157,6 @@ resource "proxcenter_lxc" "ct" {
 				),
 			},
 			{Config: f.config(cfg), PlanOnly: true},
-		},
-	})
-}
-
-// Review Focus 1: the API forces a tenant's container unprivileged.
-func TestLXCTenantForcedUnprivilegedNoDiff(t *testing.T) {
-	f := newFakeAPI(t).withVDC()
-	f.forceUnprivileged = true
-	cfg := ctConfig("stopped", "  unprivileged = false")
-	resource.UnitTest(t, resource.TestCase{
-		ProtoV6ProviderFactories: f.providerFactories(),
-		CheckDestroy:             f.noVMsBut(),
-		Steps: []resource.TestStep{
-			{Config: f.config(cfg)},
-			{Config: f.config(cfg), PlanOnly: true},
-			// Set at creation only: the state keeps the configured value.
-			{Config: f.config(cfg), Check: resource.TestCheckResourceAttr("proxcenter_lxc.ct", "unprivileged", "false")},
 		},
 	})
 }

@@ -7,6 +7,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework-timeouts/resource/timeouts"
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
+	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -233,18 +234,32 @@ func (r *lxcResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanReq
 	if req.State.Raw.IsNull() {
 		var targetNode types.String
 		resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("target_node"), &targetNode)...)
+		clone := plan.Source != nil && !plan.Source.CloneOf.IsNull()
 		if plan.Source == nil {
 			resp.Diagnostics.AddAttributeError(path.Root("source"), "Missing source",
 				"source is required to create a container: set ostemplate or clone_of.")
-		} else if !plan.Source.OSTemplate.IsNull() && targetNode.IsNull() {
+		} else if !clone && targetNode.IsNull() {
 			resp.Diagnostics.AddAttributeError(path.Root("target_node"), "Missing target_node",
 				"A container from a template needs target_node: pick one of the nodes of its vDC (data.proxcenter_vdc.<name>.nodes).")
 		}
-		if plan.SwapMB.IsUnknown() {
-			plan.SwapMB = types.Int64Value(512)
-		}
-		if plan.Unprivileged.IsUnknown() {
-			plan.Unprivileged = types.BoolValue(true)
+		if clone {
+			// A clone takes these from its source, and the API cannot set them
+			// once the container exists.
+			for _, name := range []string{"password_wo", "ssh_keys", "nameserver", "search_domain", "unprivileged"} {
+				var v attr.Value
+				resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root(name), &v)...)
+				if v != nil && !v.IsNull() {
+					resp.Diagnostics.AddAttributeError(path.Root(name), "Not settable on a clone",
+						name+" of a cloned container comes from its source and cannot be set afterwards: set it in the source, or inside the container.")
+				}
+			}
+		} else {
+			if plan.SwapMB.IsUnknown() {
+				plan.SwapMB = types.Int64Value(512)
+			}
+			if plan.Unprivileged.IsUnknown() {
+				plan.Unprivileged = types.BoolValue(true)
+			}
 		}
 		if plan.PowerState.IsUnknown() {
 			plan.PowerState = types.StringValue("running")
@@ -300,8 +315,9 @@ func modelToCT(m lxcModel) vmconfig.CT {
 		return v.ValueString()
 	}
 	ct := vmconfig.CT{Hostname: m.Hostname.ValueString(), Cores: m.Cores.ValueInt64(), MemoryMB: m.MemoryMB.ValueInt64()}
-	if !m.SwapMB.IsUnknown() {
-		ct.SwapMB = m.SwapMB.ValueInt64()
+	if !m.SwapMB.IsUnknown() && !m.SwapMB.IsNull() {
+		v := m.SwapMB.ValueInt64()
+		ct.SwapMB = &v
 	}
 	if !m.Features.IsNull() && !m.Features.IsUnknown() {
 		ct.Features = map[string]bool{}

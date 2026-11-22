@@ -34,11 +34,14 @@ type CTNIC struct {
 // CT is the part of a container config the provider describes. Nameserver,
 // SearchDomain and Unprivileged are set at creation only.
 type CT struct {
-	Hostname     string
-	Cores        int64
-	MemoryMB     int64
-	SwapMB       int64
+	Hostname string
+	Cores    int64
+	MemoryMB int64
+	// SwapMB is nil when unknown or not described: 0 is a real value.
+	SwapMB       *int64
 	Unprivileged bool
+	// Features holds the boolean features only (nesting, keyctl, fuse...);
+	// a valued one such as mount=nfs;cifs stays in the raw config.
 	Features     map[string]bool
 	RootFS       MountPoint
 	MountPoints  []MountPoint
@@ -52,7 +55,7 @@ var mpKeyRe = regexp.MustCompile(`^mp\d+$`)
 // ParseCT reads the described part of a Proxmox container config.
 func ParseCT(data map[string]any) (CT, error) {
 	ct := CT{Hostname: str(data["hostname"]), Nameserver: str(data["nameserver"]), SearchDomain: str(data["searchdomain"])}
-	for key, dst := range map[string]*int64{"cores": &ct.Cores, "memory": &ct.MemoryMB, "swap": &ct.SwapMB} {
+	for key, dst := range map[string]*int64{"cores": &ct.Cores, "memory": &ct.MemoryMB} {
 		if v, ok := data[key]; ok && v != nil {
 			n, err := toInt(v)
 			if err != nil {
@@ -61,11 +64,20 @@ func ParseCT(data map[string]any) (CT, error) {
 			*dst = n
 		}
 	}
+	if v, ok := data["swap"]; ok && v != nil {
+		n, err := toInt(v)
+		if err != nil {
+			return CT{}, fmt.Errorf("config key swap: %w", err)
+		}
+		ct.SwapMB = &n
+	}
 	ct.Unprivileged = str(data["unprivileged"]) == "1" || data["unprivileged"] == true
 	if f := str(data["features"]); f != "" {
 		ct.Features = map[string]bool{}
 		for _, o := range splitOptions(f) {
-			ct.Features[o.key] = o.value == "1"
+			if o.value == "0" || o.value == "1" {
+				ct.Features[o.key] = o.value == "1"
+			}
 		}
 	}
 	if r := str(data["rootfs"]); r != "" {
@@ -131,11 +143,13 @@ func parseCTNIC(slot, value string) CTNIC {
 	return n
 }
 
-// RenderMountPoint is the value that creates a mount point (or rootfs).
+// RenderMountPoint is the value that creates a mount point (or rootfs). A
+// mount point is included in backups: Proxmox leaves a volume mount point
+// out of them unless told, and the API cannot change it afterwards.
 func RenderMountPoint(m MountPoint) string {
 	out := fmt.Sprintf("%s:%d", m.Storage, m.SizeGB)
 	if m.Path != "" {
-		out += ",mp=" + m.Path
+		out += ",mp=" + m.Path + ",backup=1"
 	}
 	return out
 }
@@ -172,16 +186,28 @@ func RenderCTNIC(n CTNIC, current string) string {
 	return strings.Join(parts, ",")
 }
 
-// RenderFeatures is the features value, its keys sorted.
-func RenderFeatures(f map[string]bool) string {
+// RenderFeatures is the features value: the described boolean features set
+// onto current, every other key of current (mount=nfs;cifs...) kept.
+func RenderFeatures(f map[string]bool, current string) string {
+	var parts []string
+	seen := map[string]bool{}
+	for _, o := range splitOptions(current) {
+		if v, described := f[o.key]; described {
+			parts = append(parts, o.key+"="+boolFlag(v))
+			seen[o.key] = true
+		} else if o.value != "0" && o.value != "1" {
+			parts = append(parts, o.raw) // not a boolean: never ours to drop
+		}
+	}
 	keys := make([]string, 0, len(f))
 	for k := range f {
-		keys = append(keys, k)
+		if !seen[k] {
+			keys = append(keys, k)
+		}
 	}
 	sort.Strings(keys)
-	parts := make([]string, len(keys))
-	for i, k := range keys {
-		parts[i] = k + "=" + boolFlag(f[k])
+	for _, k := range keys {
+		parts = append(parts, k+"="+boolFlag(f[k]))
 	}
 	return strings.Join(parts, ",")
 }
@@ -195,13 +221,16 @@ func CTChanges(old, desired CT, currentRaw map[string]any) (Changes, error) {
 	if desired.Hostname != "" && desired.Hostname != old.Hostname {
 		c.Keys["hostname"] = desired.Hostname
 	}
-	for key, pair := range map[string][2]int64{"cores": {old.Cores, desired.Cores}, "memory": {old.MemoryMB, desired.MemoryMB}, "swap": {old.SwapMB, desired.SwapMB}} {
+	for key, pair := range map[string][2]int64{"cores": {old.Cores, desired.Cores}, "memory": {old.MemoryMB, desired.MemoryMB}} {
 		if pair[1] != 0 && pair[0] != pair[1] {
 			c.Keys[key] = pair[1]
 		}
 	}
+	if desired.SwapMB != nil && (old.SwapMB == nil || *old.SwapMB != *desired.SwapMB) {
+		c.Keys["swap"] = *desired.SwapMB
+	}
 	if desired.Features != nil && !mapsEqual(desired.Features, old.Features) {
-		c.Keys["features"] = RenderFeatures(desired.Features)
+		c.Keys["features"] = RenderFeatures(desired.Features, str(currentRaw["features"]))
 	}
 	if err := mountPointChange(old.RootFS, desired.RootFS, &c); err != nil {
 		return Changes{}, err
@@ -239,6 +268,9 @@ func CTChanges(old, desired CT, currentRaw map[string]any) (Changes, error) {
 }
 
 func mountPointChange(old, d MountPoint, c *Changes) error {
+	if d.Path != "" && old.Path != "" && d.Path != old.Path {
+		return fmt.Errorf("path of %s: %s to %s, ProxCenter sets the path of a mount point at creation only", d.Slot, old.Path, d.Path)
+	}
 	if d.SizeGB != 0 && d.SizeGB < old.SizeGB {
 		return fmt.Errorf("%s: size %d GB to %d GB, Proxmox cannot shrink a volume", d.Slot, old.SizeGB, d.SizeGB)
 	}

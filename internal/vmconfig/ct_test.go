@@ -30,7 +30,7 @@ func TestParseCT(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if ct.Hostname != "ct-web" || ct.Cores != 2 || ct.MemoryMB != 1024 || ct.SwapMB != 512 || !ct.Unprivileged {
+	if ct.Hostname != "ct-web" || ct.Cores != 2 || ct.MemoryMB != 1024 || ct.SwapMB == nil || *ct.SwapMB != 512 || !ct.Unprivileged {
 		t.Fatalf("scalars %+v", ct)
 	}
 	if !reflect.DeepEqual(ct.Features, map[string]bool{"nesting": true, "keyctl": true}) {
@@ -57,7 +57,7 @@ func TestParseCT(t *testing.T) {
 
 func TestParseCTPrivilegedAndBare(t *testing.T) {
 	ct, err := ParseCT(map[string]any{"hostname": "x", "cores": "1", "memory": "512", "rootfs": "local-lvm:vm-1-disk-0,size=4G"})
-	if err != nil || ct.Unprivileged || ct.Features != nil || ct.SwapMB != 0 {
+	if err != nil || ct.Unprivileged || ct.Features != nil || ct.SwapMB != nil {
 		t.Fatalf("got %+v, %v", ct, err)
 	}
 }
@@ -78,7 +78,7 @@ func TestRenderNewCTNIC(t *testing.T) {
 }
 
 func TestRenderFeatures(t *testing.T) {
-	if got := RenderFeatures(map[string]bool{"nesting": true, "keyctl": false, "fuse": true}); got != "fuse=1,keyctl=0,nesting=1" {
+	if got := RenderFeatures(map[string]bool{"nesting": true, "keyctl": false, "fuse": true}, ""); got != "fuse=1,keyctl=0,nesting=1" {
 		t.Fatalf("got %q", got)
 	}
 }
@@ -185,5 +185,36 @@ func TestCTChangesIgnoreCreationOnlyKeys(t *testing.T) {
 	want.Nameserver, want.SearchDomain, want.Unprivileged = "9.9.9.9", "other", false
 	if c, err := CTChanges(baseCT(t), want, labCT()); err != nil || !c.Empty() {
 		t.Fatalf("creation-only keys must not be written: %+v, %v", c, err)
+	}
+}
+
+func TestRenderFeaturesKeepsValuedKeys(t *testing.T) {
+	if got := RenderFeatures(map[string]bool{"nesting": false}, "mount=nfs;cifs,nesting=1,keyctl=1"); got != "mount=nfs;cifs,nesting=0" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestParseCTFeaturesSkipValuedKeys(t *testing.T) {
+	ct, _ := ParseCT(map[string]any{"features": "mount=nfs;cifs,nesting=1"})
+	if len(ct.Features) != 1 || !ct.Features["nesting"] {
+		t.Fatalf("features %v", ct.Features)
+	}
+}
+
+func TestCTChangesSwapZero(t *testing.T) {
+	want := baseCT(t)
+	zero := int64(0)
+	want.SwapMB = &zero
+	c, err := CTChanges(baseCT(t), want, labCT())
+	if err != nil || c.Keys["swap"] != int64(0) {
+		t.Fatalf("got %+v, %v", c, err)
+	}
+}
+
+func TestCTChangesMountPointPathIsError(t *testing.T) {
+	want := baseCT(t)
+	want.MountPoints[0].Path = "/srv"
+	if _, err := CTChanges(baseCT(t), want, labCT()); err == nil || !strings.Contains(err.Error(), "path of mp0") {
+		t.Fatalf("got %v", err)
 	}
 }

@@ -85,7 +85,7 @@ func (r *lxcResource) Create(ctx context.Context, req resource.CreateRequest, re
 	}
 	if !plan.Unprivileged.IsUnknown() && plan.Unprivileged.ValueBool() != actualUnprivileged {
 		resp.Diagnostics.AddWarning("Unprivileged container",
-			fmt.Sprintf("ProxCenter created the container with unprivileged = %t (a vDC tenant container is always unprivileged); the state keeps the configured value.", actualUnprivileged))
+			fmt.Sprintf("Proxmox created the container with unprivileged = %t; the state keeps the configured value.", actualUnprivileged))
 	}
 	nullUnknownsCT(&final)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &final)...)
@@ -111,7 +111,7 @@ func createBody(plan lxcModel, vmid int, password string) map[string]any {
 		body[n.Slot] = vmconfig.RenderCTNIC(n, "")
 	}
 	if ct.Features != nil {
-		body["features"] = vmconfig.RenderFeatures(ct.Features)
+		body["features"] = vmconfig.RenderFeatures(ct.Features, "")
 	}
 	if keys := normalizeKeys(plan.SSHKeys); len(keys) > 0 && !plan.SSHKeys.IsUnknown() {
 		body["ssh-public-keys"] = strings.Join(keys, "\n")
@@ -147,10 +147,10 @@ func (r *lxcResource) createFromTemplate(ctx context.Context, plan lxcModel, nod
 		}
 		if upid != "" {
 			if err := r.client.WaitTask(ctx, conn, taskNode, upid); err != nil {
-				// Accepted, then failed or still running: ours only if it exists
-				// under the requested hostname.
-				own := r.ops().ownVM(ctx, conn, node, vmid, plan.Hostname.ValueString())
-				return vmid, node, own, fmt.Errorf("creating container %d: %w", vmid, err)
+				// Accepted: Proxmox checked the VMID was free and holds it for
+				// this container. A failed create is cleaned up by Proxmox and
+				// the next refresh sees the 404.
+				return vmid, node, true, fmt.Errorf("creating container %d: %w", vmid, err)
 			}
 		}
 		return vmid, node, true, nil
@@ -269,7 +269,11 @@ func (r *lxcResource) readInto(ctx context.Context, conn, node string, vmid int,
 	}
 	m := prior
 	m.ID, m.ConnectionID, m.VMID, m.Node = types.StringValue(vmID(conn, int64(vmid))), types.StringValue(conn), types.Int64Value(int64(vmid)), types.StringValue(node)
-	m.Hostname, m.Cores, m.MemoryMB, m.SwapMB = types.StringValue(ct.Hostname), types.Int64Value(ct.Cores), types.Int64Value(ct.MemoryMB), types.Int64Value(ct.SwapMB)
+	m.Hostname, m.Cores, m.MemoryMB = types.StringValue(ct.Hostname), types.Int64Value(ct.Cores), types.Int64Value(ct.MemoryMB)
+	m.SwapMB = types.Int64Null()
+	if ct.SwapMB != nil {
+		m.SwapMB = types.Int64Value(*ct.SwapMB)
+	}
 	// Set at creation only: read on import, then the configured value stays.
 	if importing || m.Unprivileged.IsUnknown() || m.Unprivileged.IsNull() {
 		m.Unprivileged = types.BoolValue(ct.Unprivileged)

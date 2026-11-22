@@ -53,9 +53,9 @@ type fakeAPI struct {
 	nextIDCalls int
 	// ctTemplates are the container templates a create may name.
 	ctTemplates map[string]bool
-	// forceUnprivileged makes every new container unprivileged, as ProxCenter
-	// does for a vDC tenant.
-	forceUnprivileged bool
+	// tenantCreates applies ProxCenter's vDC tenant rule: unprivileged is
+	// injected when absent, and any other value than 1 is refused.
+	tenantCreates bool
 	// cloneProvisioning and cloneFailures seed every new clone.
 	cloneProvisioning []string
 	cloneFailures     []string
@@ -404,7 +404,11 @@ func (f *fakeAPI) createGuest(w http.ResponseWriter, typ, node string, body map[
 			cfg[k] = v
 		}
 	}
-	if f.forceUnprivileged {
+	if f.tenantCreates {
+		if v, sent := body["unprivileged"]; sent && fmt.Sprint(v) != "1" {
+			errorReply(w, 403, "Tenants may only create unprivileged containers.")
+			return
+		}
 		cfg["unprivileged"] = float64(1)
 	}
 	f.vms[vmid] = &fakeVM{Type: "lxc", Node: node, Status: "stopped", Config: cfg, Pending: map[string]any{}}
