@@ -256,7 +256,6 @@ func (r *lxcResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanReq
 			return
 		}
 		plan.TargetNode = state.TargetNode
-		keepCreationOnly(&plan, state, resp)
 		if _, err := vmconfig.CTChanges(modelToCT(state), modelToCT(plan), nil); err != nil {
 			resp.Diagnostics.AddError("Change refused", err.Error())
 		}
@@ -278,28 +277,6 @@ func (r *lxcResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanReq
 	}
 	if !resp.Diagnostics.HasError() {
 		resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
-	}
-}
-
-// keepCreationOnly keeps in the plan the state value of what Proxmox sets at
-// creation only, and warns when the configuration asks for something else.
-func keepCreationOnly(plan *lxcModel, state lxcModel, resp *resource.ModifyPlanResponse) {
-	changed := []string{}
-	if !plan.Unprivileged.IsUnknown() && !plan.Unprivileged.Equal(state.Unprivileged) {
-		plan.Unprivileged, changed = state.Unprivileged, append(changed, "unprivileged")
-	}
-	if !plan.SSHKeys.IsUnknown() && !plan.SSHKeys.Equal(state.SSHKeys) && !state.SSHKeys.IsNull() {
-		plan.SSHKeys, changed = state.SSHKeys, append(changed, "ssh_keys")
-	}
-	if !plan.Nameserver.IsUnknown() && !plan.Nameserver.Equal(state.Nameserver) {
-		plan.Nameserver, changed = state.Nameserver, append(changed, "nameserver")
-	}
-	if !plan.SearchDomain.IsUnknown() && !plan.SearchDomain.Equal(state.SearchDomain) {
-		plan.SearchDomain, changed = state.SearchDomain, append(changed, "search_domain")
-	}
-	if len(changed) > 0 {
-		resp.Diagnostics.AddWarning("Set at creation only",
-			"ProxCenter sets "+joinWords(changed)+" of a container at its creation only: the change is not applied. Change it inside the container, or replace the container.")
 	}
 }
 

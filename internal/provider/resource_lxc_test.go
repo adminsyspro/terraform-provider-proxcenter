@@ -172,8 +172,8 @@ func TestLXCTenantForcedUnprivilegedNoDiff(t *testing.T) {
 		Steps: []resource.TestStep{
 			{Config: f.config(cfg)},
 			{Config: f.config(cfg), PlanOnly: true},
-			// An apply with nothing to change refreshes: the state records true.
-			{Config: f.config(cfg), Check: resource.TestCheckResourceAttr("proxcenter_lxc.ct", "unprivileged", "true")},
+			// Set at creation only: the state keeps the configured value.
+			{Config: f.config(cfg), Check: resource.TestCheckResourceAttr("proxcenter_lxc.ct", "unprivileged", "false")},
 		},
 	})
 }

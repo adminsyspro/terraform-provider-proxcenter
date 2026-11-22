@@ -63,7 +63,8 @@ func (r *lxcResource) Create(ctx context.Context, req resource.CreateRequest, re
 		resp.Diagnostics.AddError("Creating the container failed", err.Error())
 		return
 	}
-	if err := r.configureCreated(ctx, conn, node, vmid, plan); err != nil {
+	actualUnprivileged, err := r.configureCreated(ctx, conn, node, vmid, plan)
+	if err != nil {
 		resp.Diagnostics.AddError("Configuring the new container failed", err.Error())
 		return
 	}
@@ -82,12 +83,9 @@ func (r *lxcResource) Create(ctx context.Context, req resource.CreateRequest, re
 	if final.TargetNode.IsUnknown() {
 		final.TargetNode = types.StringValue(node)
 	}
-	if !plan.Unprivileged.IsUnknown() && !plan.Unprivileged.Equal(final.Unprivileged) {
-		// Terraform takes no other value than the configured one here; the
-		// next refresh reads the real one, kept by the creation-only rule.
+	if !plan.Unprivileged.IsUnknown() && plan.Unprivileged.ValueBool() != actualUnprivileged {
 		resp.Diagnostics.AddWarning("Unprivileged container",
-			"ProxCenter created the container unprivileged, as it does for every vDC tenant container; the next refresh records it.")
-		final.Unprivileged = plan.Unprivileged
+			fmt.Sprintf("ProxCenter created the container with unprivileged = %t (a vDC tenant container is always unprivileged); the state keeps the configured value.", actualUnprivileged))
 	}
 	nullUnknownsCT(&final)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &final)...)
@@ -204,23 +202,24 @@ func (r *lxcResource) createFromClone(ctx context.Context, plan lxcModel, config
 
 // configureCreated brings a new container to the described config (a clone
 // keeps its template's settings until changed here).
-func (r *lxcResource) configureCreated(ctx context.Context, conn, node string, vmid int, plan lxcModel) error {
+func (r *lxcResource) configureCreated(ctx context.Context, conn, node string, vmid int, plan lxcModel) (bool, error) {
 	cfg, err := r.client.GetConfig(ctx, conn, node, client.GuestLXC, vmid)
 	if err != nil {
-		return err
+		return false, err
 	}
 	current, err := vmconfig.ParseCT(cfg.Data)
 	if err != nil {
-		return err
+		return false, err
 	}
+	unprivileged := current.Unprivileged
 	desired := modelToCT(plan)
 	current.MountPoints = onlySlots(current.MountPoints, desired.MountPoints, func(m vmconfig.MountPoint) string { return m.Slot })
 	current.NICs = onlySlots(current.NICs, desired.NICs, func(n vmconfig.CTNIC) string { return n.Slot })
 	changes, err := vmconfig.CTChanges(current, desired, cfg.Data)
 	if err != nil {
-		return err
+		return unprivileged, err
 	}
-	return r.ops().apply(ctx, conn, node, vmid, changes)
+	return unprivileged, r.ops().apply(ctx, conn, node, vmid, changes)
 }
 
 func (r *lxcResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -271,7 +270,10 @@ func (r *lxcResource) readInto(ctx context.Context, conn, node string, vmid int,
 	m := prior
 	m.ID, m.ConnectionID, m.VMID, m.Node = types.StringValue(vmID(conn, int64(vmid))), types.StringValue(conn), types.Int64Value(int64(vmid)), types.StringValue(node)
 	m.Hostname, m.Cores, m.MemoryMB, m.SwapMB = types.StringValue(ct.Hostname), types.Int64Value(ct.Cores), types.Int64Value(ct.MemoryMB), types.Int64Value(ct.SwapMB)
-	m.Unprivileged = types.BoolValue(ct.Unprivileged)
+	// Set at creation only: read on import, then the configured value stays.
+	if importing || m.Unprivileged.IsUnknown() || m.Unprivileged.IsNull() {
+		m.Unprivileged = types.BoolValue(ct.Unprivileged)
+	}
 	m.Features = types.MapNull(types.BoolType)
 	if ct.Features != nil {
 		vals := map[string]bool{}
@@ -283,7 +285,12 @@ func (r *lxcResource) readInto(ctx context.Context, conn, node string, vmid int,
 	m.RootFS = &rootfsModel{Storage: types.StringValue(ct.RootFS.Storage), SizeGB: types.Int64Value(ct.RootFS.SizeGB)}
 	m.MountPoints = readMountPoints(ct.MountPoints, prior.MountPoints, importing)
 	m.Networks = readCTNICs(ct.NICs, prior.Networks, importing)
-	m.Nameserver, m.SearchDomain = optionalString(ct.Nameserver), optionalString(ct.SearchDomain)
+	if importing || m.Nameserver.IsUnknown() {
+		m.Nameserver = optionalString(ct.Nameserver)
+	}
+	if importing || m.SearchDomain.IsUnknown() {
+		m.SearchDomain = optionalString(ct.SearchDomain)
+	}
 	if importing || m.SSHKeys.IsUnknown() {
 		m.SSHKeys = types.ListNull(types.StringType)
 	}
@@ -452,6 +459,92 @@ func (r *lxcResource) ImportState(ctx context.Context, req resource.ImportStateR
 	}
 }
 
-func (r *lxcResource) Update(_ context.Context, _ resource.UpdateRequest, resp *resource.UpdateResponse) {
-	resp.Diagnostics.AddError("Not implemented", "update")
+func (r *lxcResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
+	var plan, state lxcModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+	timeout, diags := plan.Timeouts.Update(ctx, 20*time.Minute)
+	resp.Diagnostics.Append(diags...)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	conn, node, vmid := state.ConnectionID.ValueString(), state.Node.ValueString(), int(state.VMID.ValueInt64())
+	ops := r.ops()
+
+	cfg, err := r.client.GetConfig(ctx, conn, node, client.GuestLXC, vmid)
+	if err != nil {
+		resp.Diagnostics.AddError("Reading the container failed", err.Error())
+		return
+	}
+	if cfg.MovedTo != "" {
+		node = cfg.MovedTo
+	}
+	changes, err := vmconfig.CTChanges(modelToCT(state), modelToCT(plan), cfg.Data)
+	if err != nil {
+		resp.Diagnostics.AddError("Change refused", err.Error())
+		return
+	}
+	if notApplied := creationOnlyChanges(state, plan); len(notApplied) > 0 {
+		resp.Diagnostics.AddWarning("Set at creation only",
+			"ProxCenter sets "+joinWords(notApplied)+" of a container at its creation only: the change is recorded but not applied. Change it inside the container, or replace the container.")
+	}
+	if err := ops.apply(ctx, conn, node, vmid, changes); err != nil {
+		resp.Diagnostics.AddError("Updating the container failed", err.Error())
+		return
+	}
+	wantRunning, wasRunning := plan.PowerState.ValueString() == "running", state.PowerState.ValueString() == "running"
+	if !changes.Empty() && wasRunning && wantRunning {
+		if pending, err := r.client.GetConfig(ctx, conn, node, client.GuestLXC, vmid); err == nil && vmconfig.NeedsReboot(pending.Pending) {
+			if plan.RebootOnChange.ValueBool() {
+				if err := ops.reboot(ctx, conn, node, vmid, plan.ForceStop.ValueBool()); err != nil {
+					resp.Diagnostics.AddError("Rebooting the container failed", err.Error())
+					return
+				}
+			} else {
+				resp.Diagnostics.AddWarning("Reboot required",
+					fmt.Sprintf("Proxmox applies the change of %s at the next reboot of the container. Set reboot_on_change = true to let the provider reboot it.", plan.Hostname.ValueString()))
+			}
+		}
+	}
+	switch {
+	case wantRunning && !wasRunning:
+		err = r.client.Power(ctx, conn, node, client.GuestLXC, vmid, "start")
+	case !wantRunning && wasRunning:
+		err = ops.stop(ctx, conn, node, vmid, plan.ForceStop.ValueBool())
+	}
+	if err != nil {
+		resp.Diagnostics.AddError("Changing the power state failed", err.Error())
+		return
+	}
+	final, found, err := r.readInto(ctx, conn, node, vmid, plan, false)
+	if err != nil || !found {
+		resp.Diagnostics.AddError("Reading the container failed", errText(err, "the container is no longer found"))
+		return
+	}
+	final.PowerState, final.TargetNode = plan.PowerState, state.TargetNode
+	if !plan.Node.IsUnknown() {
+		final.Node = plan.Node
+	}
+	nullUnknownsCT(&final)
+	resp.Diagnostics.Append(resp.State.Set(ctx, &final)...)
+}
+
+// creationOnlyChanges lists the creation-only settings the plan changes.
+func creationOnlyChanges(state, plan lxcModel) []string {
+	var out []string
+	if !plan.Unprivileged.IsUnknown() && !plan.Unprivileged.Equal(state.Unprivileged) {
+		out = append(out, "unprivileged")
+	}
+	if !plan.SSHKeys.IsUnknown() && !plan.SSHKeys.Equal(state.SSHKeys) {
+		out = append(out, "ssh_keys")
+	}
+	if !plan.Nameserver.IsUnknown() && !plan.Nameserver.Equal(state.Nameserver) {
+		out = append(out, "nameserver")
+	}
+	if !plan.SearchDomain.IsUnknown() && !plan.SearchDomain.Equal(state.SearchDomain) {
+		out = append(out, "search_domain")
+	}
+	return out
 }
