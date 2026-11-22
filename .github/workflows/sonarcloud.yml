@@ -39,7 +39,7 @@ jobs:
           TF_VERSION: 1.17.2
           TF_SHA256: e6f16b2f0b137ee5729caa8c4e79a3bae4ee261acd198a1fcfa8584a6296605b
         run: |
-          curl -fsSL -o "$RUNNER_TEMP/terraform.zip" "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip"
+          curl --proto "=https" --tlsv1.2 -fsSL -o "$RUNNER_TEMP/terraform.zip" "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip"
           echo "${TF_SHA256}  $RUNNER_TEMP/terraform.zip" | sha256sum -c -
           unzip -q -o "$RUNNER_TEMP/terraform.zip" -d "$RUNNER_TEMP/bin"
           echo "TF_ACC_TERRAFORM_PATH=$RUNNER_TEMP/bin/terraform" >> "$GITHUB_ENV"
@@ -50,7 +50,7 @@ jobs:
           SCANNER_VERSION: 8.5.0.16571
           SCANNER_SHA256: 62a200079f5ed38682e59ce5fb507f75b7a3c8dd672cfaf647be15a2406422cd
         run: |
-          curl -fsSL -o "$RUNNER_TEMP/scanner.zip" \
+          curl --proto "=https" --tlsv1.2 -fsSL -o "$RUNNER_TEMP/scanner.zip" \
             "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${SCANNER_VERSION}-linux-x64.zip"
           echo "${SCANNER_SHA256}  $RUNNER_TEMP/scanner.zip" | sha256sum -c -
           unzip -q -o "$RUNNER_TEMP/scanner.zip" -d "$RUNNER_TEMP"

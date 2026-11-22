@@ -29,7 +29,7 @@ jobs:
           GOLANGCI_VERSION: 2.15.0
           GOLANGCI_SHA256: 9b7fe6a6bf6334b98decf8d86b11415ea7889afdabdd1959fdce23af2a9ebcea
         run: |
-          curl -fsSL -o "$RUNNER_TEMP/golangci.tar.gz" \
+          curl --proto "=https" --tlsv1.2 -fsSL -o "$RUNNER_TEMP/golangci.tar.gz" \
             "https://github.com/golangci/golangci-lint/releases/download/v${GOLANGCI_VERSION}/golangci-lint-${GOLANGCI_VERSION}-linux-amd64.tar.gz"
           echo "${GOLANGCI_SHA256}  $RUNNER_TEMP/golangci.tar.gz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/golangci.tar.gz" -C "$RUNNER_TEMP" --strip-components=1 "golangci-lint-${GOLANGCI_VERSION}-linux-amd64/golangci-lint"
@@ -52,7 +52,7 @@ jobs:
           TF_VERSION: 1.17.2
           TF_SHA256: e6f16b2f0b137ee5729caa8c4e79a3bae4ee261acd198a1fcfa8584a6296605b
         run: |
-          curl -fsSL -o "$RUNNER_TEMP/terraform.zip" "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip"
+          curl --proto "=https" --tlsv1.2 -fsSL -o "$RUNNER_TEMP/terraform.zip" "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip"
           echo "${TF_SHA256}  $RUNNER_TEMP/terraform.zip" | sha256sum -c -
           unzip -q -o "$RUNNER_TEMP/terraform.zip" -d "$RUNNER_TEMP/bin"
           echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
@@ -87,7 +87,7 @@ jobs:
           TF_VERSION: ${{ matrix.terraform.version }}
           TF_SHA256: ${{ matrix.terraform.sha256 }}
         run: |
-          curl -fsSL -o "$RUNNER_TEMP/terraform.zip" "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip"
+          curl --proto "=https" --tlsv1.2 -fsSL -o "$RUNNER_TEMP/terraform.zip" "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip"
           echo "${TF_SHA256}  $RUNNER_TEMP/terraform.zip" | sha256sum -c -
           unzip -q -o "$RUNNER_TEMP/terraform.zip" -d "$RUNNER_TEMP/bin"
           echo "TF_ACC_TERRAFORM_PATH=$RUNNER_TEMP/bin/terraform" >> "$GITHUB_ENV"
