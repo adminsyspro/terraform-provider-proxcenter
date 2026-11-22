@@ -1,0 +1,73 @@
+name: SonarCloud (PR gate)
+
+# Same gate as proxcenter-ui: the pull request waits for the Quality Gate
+# (new code included coverage), and every merge refreshes the main analysis
+# so new code is measured against a current baseline. GitHub-owned actions
+# only: the scanner is downloaded and checked against its SHA-256.
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  sonar:
+    name: SonarCloud Code Analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          # Sonar needs the full history for blame and new-code detection.
+          fetch-depth: 0
+      - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Install Terraform
+        env:
+          TF_VERSION: 1.17.2
+          TF_SHA256: e6f16b2f0b137ee5729caa8c4e79a3bae4ee261acd198a1fcfa8584a6296605b
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/terraform.zip" "https://releases.hashicorp.com/terraform/${TF_VERSION}/terraform_${TF_VERSION}_linux_amd64.zip"
+          echo "${TF_SHA256}  $RUNNER_TEMP/terraform.zip" | sha256sum -c -
+          unzip -q -o "$RUNNER_TEMP/terraform.zip" -d "$RUNNER_TEMP/bin"
+          echo "TF_ACC_TERRAFORM_PATH=$RUNNER_TEMP/bin/terraform" >> "$GITHUB_ENV"
+      - name: Run tests with coverage
+        run: go test -coverprofile=coverage.out ./...
+      - name: Install the SonarScanner
+        env:
+          SCANNER_VERSION: 8.5.0.16571
+          SCANNER_SHA256: 62a200079f5ed38682e59ce5fb507f75b7a3c8dd672cfaf647be15a2406422cd
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/scanner.zip" \
+            "https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-${SCANNER_VERSION}-linux-x64.zip"
+          echo "${SCANNER_SHA256}  $RUNNER_TEMP/scanner.zip" | sha256sum -c -
+          unzip -q -o "$RUNNER_TEMP/scanner.zip" -d "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/sonar-scanner-${SCANNER_VERSION}-linux-x64/bin" >> "$GITHUB_PATH"
+      # Wait for the Quality Gate on pull requests only: the post-merge run
+      # refreshes the baseline and must not fail on code already merged.
+      - name: SonarCloud scan
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
+          QG_WAIT: ${{ github.event_name == 'pull_request' }}
+          PR_KEY: ${{ github.event.pull_request.number }}
+          PR_BRANCH: ${{ github.head_ref }}
+          PR_BASE: ${{ github.base_ref }}
+        run: |
+          args=("-Dsonar.qualitygate.wait=${QG_WAIT}")
+          if [ -n "$PR_KEY" ]; then
+            args+=("-Dsonar.pullrequest.key=${PR_KEY}" "-Dsonar.pullrequest.branch=${PR_BRANCH}" "-Dsonar.pullrequest.base=${PR_BASE}")
+          fi
+          sonar-scanner "${args[@]}"

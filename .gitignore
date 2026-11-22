@@ -6,3 +6,4 @@ coverage.out
 *.tfstate*
 .terraform.lock.hcl
 dist/
+coverage.out
