@@ -122,7 +122,7 @@ func (r *lxcResource) Schema(ctx context.Context, _ resource.SchemaRequest, resp
 			"memory_mb":   schema.Int64Attribute{Required: true, Description: "Memory, MiB."},
 			"swap_mb": schema.Int64Attribute{Optional: true, Computed: true, Description: "Swap, MiB; 512 at creation when unset.",
 				PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown()}},
-			"unprivileged": schema.BoolAttribute{Optional: true, Computed: true, Description: "Unprivileged container; true at creation when unset. Set at creation only; a vDC tenant always gets true.",
+			"unprivileged": schema.BoolAttribute{Optional: true, Computed: true, Description: "Unprivileged container; true at creation when unset. Set at creation only; ProxCenter refuses false to a vDC tenant.",
 				PlanModifiers: []planmodifier.Bool{boolUseStateForUnknown()}},
 			"features": schema.MapAttribute{Optional: true, Computed: true, ElementType: types.BoolType, Description: "Container features, e.g. { nesting = true }; unset keeps what the container has.",
 				PlanModifiers: []planmodifier.Map{mapplanmodifier.UseStateForUnknown()}},

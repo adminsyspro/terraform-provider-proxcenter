@@ -9,7 +9,7 @@ description: |-
 
 An LXC container managed through ProxCenter, created from a container template or by cloning a container. Quotas, allowed networks and vDC rules are enforced by ProxCenter; its refusals are shown as they are.
 
-What ProxCenter lets change after creation is CPU, memory, swap, features, the hostname and the network cards; the root filesystem and mount points grow and move in place. Mount points, the root password, the SSH keys, the DNS settings and the privilege of a container are set at its creation only: changing them later is recorded with a warning and not applied. A vDC tenant always gets an unprivileged container. ProxCenter allocates no IPAM address to a container: set `ip` to an address of the network, or `dhcp` where a DHCP server answers.
+What ProxCenter lets change after creation is CPU, memory, swap, features, the hostname and the network cards; the root filesystem and mount points grow and move in place. Mount points, the root password, the SSH keys, the DNS settings and the privilege of a container are set at its creation only: changing them later is recorded with a warning and not applied. A vDC tenant may only create unprivileged containers: ProxCenter refuses `unprivileged = false`. A clone takes its privilege, password, keys and DNS settings from its source. Mount points are created included in backups. ProxCenter allocates no IPAM address to a container: set `ip` to an address of the network, or `dhcp` where a DHCP server answers.
 
 ## Example
 
@@ -91,7 +91,7 @@ resource "proxcenter_lxc" "web" {
 - `swap_mb` (Number) Swap, MiB; 512 at creation when unset.
 - `target_node` (String) Node to create the container on; required for an ostemplate source, defaults to the source's node for a clone. Ignored after creation.
 - `timeouts` (Block, Optional) (see [below for nested schema](#nestedblock--timeouts))
-- `unprivileged` (Boolean) Unprivileged container; true at creation when unset. Set at creation only; a vDC tenant always gets true.
+- `unprivileged` (Boolean) Unprivileged container; true at creation when unset. Set at creation only; ProxCenter refuses false to a vDC tenant.
 - `vmid` (Number) Unset: the next free VMID (inside the tenant range for a vDC tenant).
 
 ### Read-Only
