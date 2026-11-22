@@ -45,7 +45,7 @@ jobs:
           GORELEASER_VERSION: 2.20.3
           GORELEASER_SHA256: a36d5d7d07a5e538e052cef2a9f93f1cd4af493cf5a3712b9177c1ebe360f0e7
         run: |
-          curl -fsSL -o "$RUNNER_TEMP/goreleaser.tar.gz" \
+          curl --proto "=https" --tlsv1.2 -fsSL -o "$RUNNER_TEMP/goreleaser.tar.gz" \
             "https://github.com/goreleaser/goreleaser/releases/download/v${GORELEASER_VERSION}/goreleaser_Linux_x86_64.tar.gz"
           echo "${GORELEASER_SHA256}  $RUNNER_TEMP/goreleaser.tar.gz" | sha256sum -c -
           tar -xzf "$RUNNER_TEMP/goreleaser.tar.gz" -C "$RUNNER_TEMP" goreleaser
