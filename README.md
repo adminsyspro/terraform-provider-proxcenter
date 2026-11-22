@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <strong>Manage ProxCenter virtual machines as code, from a provider administrator down to a vDC tenant</strong>
+  <strong>Manage ProxCenter virtual machines and containers as code, from a provider administrator down to a vDC tenant</strong>
 </p>
 
 <p align="center">
@@ -28,7 +28,7 @@
 ## Overview
 
 <p align="center">
-  The <strong>ProxCenter provider</strong> drives <a href="https://www.proxcenter.io/">ProxCenter</a>, the Proxmox VE datacenter management platform, through its public API v1. Describe your virtual machines once, then let Terraform create them from the catalogue or by cloning, change them in place and follow what changed outside it.
+  The <strong>ProxCenter provider</strong> drives <a href="https://www.proxcenter.io/">ProxCenter</a>, the Proxmox VE datacenter management platform, through its public API v1. Describe your virtual machines and containers once, then let Terraform create them from the catalogue, a template or by cloning, change them in place and follow what changed outside it.
 </p>
 
 It talks to ProxCenter only, with a `pxc_` API token: the same configuration works for a provider administrator and for the tenant of a Virtual Data Center. Quotas, allowed networks and the vDC boundaries stay enforced by ProxCenter, and its refusals reach you as it wrote them.
@@ -121,6 +121,7 @@ terraform apply
 | | Name | Purpose |
 |---|---|---|
 | Resource | `proxcenter_vm` | QEMU VM from a catalogue image, a blueprint or a clone; CPU, memory, disks, network cards, cloud-init and power changed in place; importable |
+| Resource | `proxcenter_lxc` | LXC container from a template or a clone; CPU, memory, swap, features, volumes (grow and move), network cards and power changed in place; importable |
 | Data source | `proxcenter_vdc`, `proxcenter_vdcs` | vDCs with their nodes, storages, quota and usage |
 | Data source | `proxcenter_images`, `proxcenter_blueprints` | what the token may deploy |
 | Data source | `proxcenter_storages` | storages of a connection |
@@ -151,6 +152,7 @@ What happens outside Terraform:
 - **A DRS migration** to another node plans nothing: the node is read back on every refresh.
 - **A VM deleted outside Terraform** is planned for creation again.
 - **The cloud-init password** is write-only: it is never stored in the state. Bump `password_wo_version` to send a new one.
+- **Containers**: mount points, the root password, the SSH keys, the DNS settings and the privilege are set at creation only; a later change is recorded with a warning, never by replacing the container.
 
 ---
 

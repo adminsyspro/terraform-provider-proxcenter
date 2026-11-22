@@ -1,0 +1,22 @@
+---
+page_title: "{{.Name}} {{.Type}} - {{.ProviderName}}"
+subcategory: ""
+description: |-
+{{ .Description | plainmarkdown | trimspace | prefixlines "  " }}
+---
+
+# {{.Name}} ({{.Type}})
+
+{{ .Description | trimspace }}
+
+What ProxCenter lets change after creation is CPU, memory, swap, features, the hostname and the network cards; the root filesystem and mount points grow and move in place. Mount points, the root password, the SSH keys, the DNS settings and the privilege of a container are set at its creation only: changing them later is recorded with a warning and not applied. A vDC tenant always gets an unprivileged container. ProxCenter allocates no IPAM address to a container: set `ip` to an address of the network, or `dhcp` where a DHCP server answers.
+
+## Example
+
+{{ tffile "examples/resources/proxcenter_lxc/resource.tf" }}
+
+{{ .SchemaMarkdown | trimspace }}
+
+## Import
+
+{{ codefile "shell" "examples/resources/proxcenter_lxc/import.sh" }}
