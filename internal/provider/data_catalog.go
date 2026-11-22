@@ -26,13 +26,17 @@ func (d *imagesDataSource) Metadata(_ context.Context, req datasource.MetadataRe
 }
 
 func (d *imagesDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
-	str := schema.StringAttribute{Computed: true}
 	resp.Schema = schema.Schema{
 		Description: "Catalogue images the token may deploy (source.image of a proxcenter_vm). Needs a VM scope.",
 		Attributes: map[string]schema.Attribute{
 			"vendor": schema.StringAttribute{Optional: true, Description: "Only the images of this vendor."},
-			"images": schema.ListNestedAttribute{Computed: true, NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
-				"slug": str, "name": str, "vendor": str, "version": str, "format": str, "is_custom": schema.BoolAttribute{Computed: true},
+			"images": schema.ListNestedAttribute{Computed: true, Description: "The images, built-in and custom.", NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
+				"slug":      cStr("Identifier to use as source.image."),
+				"name":      cStr("Display name."),
+				"vendor":    cStr("Distribution or vendor, e.g. debian."),
+				"version":   cStr("Version of the image."),
+				"format":    cStr("qcow2, raw, img or iso."),
+				"is_custom": cBool("Whether the image was added in ProxCenter rather than built in."),
 			}}},
 		},
 	}
@@ -79,12 +83,14 @@ func (d *blueprintsDataSource) Metadata(_ context.Context, req datasource.Metada
 }
 
 func (d *blueprintsDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
-	str := schema.StringAttribute{Computed: true}
 	resp.Schema = schema.Schema{
 		Description: "Blueprints the token may deploy (source.blueprint of a proxcenter_vm). Needs a VM scope.",
 		Attributes: map[string]schema.Attribute{
-			"blueprints": schema.ListNestedAttribute{Computed: true, NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
-				"id": str, "name": str, "image_slug": str, "description": str,
+			"blueprints": schema.ListNestedAttribute{Computed: true, Description: "The blueprints.", NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
+				"id":          cStr("Identifier to use as source.blueprint."),
+				"name":        cStr("Display name."),
+				"image_slug":  cStr("Catalogue image the blueprint deploys."),
+				"description": cStr("Description of the blueprint."),
 			}}},
 		},
 	}

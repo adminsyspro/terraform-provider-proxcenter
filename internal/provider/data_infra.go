@@ -30,13 +30,13 @@ func (d *storagesDataSource) Schema(_ context.Context, _ datasource.SchemaReques
 	resp.Schema = schema.Schema{
 		Description: "Storages of a connection; a vDC tenant sees its vDC storages only. Needs storage:read.",
 		Attributes: map[string]schema.Attribute{
-			"connection_id": schema.StringAttribute{Required: true},
-			"storages": schema.ListNestedAttribute{Computed: true, NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
-				"storage": schema.StringAttribute{Computed: true},
-				"type":    schema.StringAttribute{Computed: true},
-				"shared":  schema.BoolAttribute{Computed: true},
-				"nodes":   computedStrings(""),
-				"content": computedStrings(""),
+			"connection_id": schema.StringAttribute{Required: true, Description: "Cluster connection."},
+			"storages": schema.ListNestedAttribute{Computed: true, Description: "The storages, shared ones first.", NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
+				"storage": cStr("Storage name, the storage of a disk block."),
+				"type":    cStr("Proxmox storage type, e.g. rbd, lvmthin."),
+				"shared":  cBool("Whether every node listed mounts the same storage."),
+				"nodes":   computedStrings("Nodes that mount it."),
+				"content": computedStrings("Content types it accepts, e.g. images."),
 				"free":    schema.Int64Attribute{Computed: true, Description: "Bytes."},
 				"total":   schema.Int64Attribute{Computed: true, Description: "Bytes."},
 			}}},
@@ -86,14 +86,19 @@ func (d *vnetsDataSource) Metadata(_ context.Context, req datasource.MetadataReq
 }
 
 func (d *vnetsDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
-	str := schema.StringAttribute{Computed: true}
 	resp.Schema = schema.Schema{
 		Description: "VNets of a vDC; pve_name is the bridge of a proxcenter_vm network block. The token needs a scope that opens GET /api/v1/vdcs/{id}/vnets (vdcs:read, ipam:read, nodes:read or network:write) besides its VM scopes.",
 		Attributes: map[string]schema.Attribute{
-			"vdc_id": schema.StringAttribute{Required: true},
-			"vnets": schema.ListNestedAttribute{Computed: true, NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
-				"name": str, "pve_name": str, "bridge": str, "tag": schema.Int64Attribute{Computed: true}, "type": str,
-				"cidr": str, "gateway": str, "ipam_enabled": schema.BoolAttribute{Computed: true},
+			"vdc_id": schema.StringAttribute{Required: true, Description: "vDC id (data.proxcenter_vdc.<name>.id)."},
+			"vnets": schema.ListNestedAttribute{Computed: true, Description: "The VNets.", NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
+				"name":         cStr("Name shown to the tenant."),
+				"pve_name":     cStr("Proxmox name of the VNet: the bridge of a network block."),
+				"bridge":       cStr("Underlying bridge, when any."),
+				"tag":          cInt("VXLAN VNI or VLAN tag."),
+				"type":         cStr("vxlan or vlan."),
+				"cidr":         cStr("Subnet, when the VNet has one."),
+				"gateway":      cStr("Subnet gateway."),
+				"ipam_enabled": cBool("Whether ProxCenter allocates the addresses of this subnet."),
 			}}},
 		},
 	}
@@ -142,14 +147,17 @@ func (d *vmsDataSource) Metadata(_ context.Context, req datasource.MetadataReque
 }
 
 func (d *vmsDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, resp *datasource.SchemaResponse) {
-	str := schema.StringAttribute{Computed: true}
 	resp.Schema = schema.Schema{
 		Description: "QEMU VMs of a connection the token sees, e.g. to find a template for source.clone_of. Needs vms:read.",
 		Attributes: map[string]schema.Attribute{
-			"connection_id": schema.StringAttribute{Required: true},
+			"connection_id": schema.StringAttribute{Required: true, Description: "Cluster connection."},
 			"vmids":         schema.ListAttribute{Optional: true, ElementType: types.Int64Type, Description: "Only these VMIDs."},
-			"vms": schema.ListNestedAttribute{Computed: true, NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
-				"vmid": schema.Int64Attribute{Computed: true}, "name": str, "node": str, "status": str, "template": schema.BoolAttribute{Computed: true},
+			"vms": schema.ListNestedAttribute{Computed: true, Description: "The VMs; the list ProxCenter serves may lag a few seconds behind Proxmox.", NestedObject: schema.NestedAttributeObject{Attributes: map[string]schema.Attribute{
+				"vmid":     cInt("VMID, the source.clone_of of a clone."),
+				"name":     cStr("VM name."),
+				"node":     cStr("Node it runs on."),
+				"status":   cStr("running, stopped..."),
+				"template": cBool("Whether it is a template."),
 			}}},
 		},
 	}

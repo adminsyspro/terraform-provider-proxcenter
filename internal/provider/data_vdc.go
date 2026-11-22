@@ -58,21 +58,20 @@ func vdcToModel(v client.VDC) vdcModel {
 }
 
 func vdcAttributes(lookup bool) map[string]schema.Attribute {
-	intAttr := schema.Int64Attribute{Computed: true}
 	attrs := map[string]schema.Attribute{
 		"id":              schema.StringAttribute{Computed: !lookup, Optional: lookup, Description: "vDC id."},
 		"name":            schema.StringAttribute{Computed: !lookup, Optional: lookup, Description: "vDC name."},
-		"tenant_id":       schema.StringAttribute{Computed: true},
+		"tenant_id":       cStr("Tenant the vDC belongs to."),
 		"connection_id":   schema.StringAttribute{Computed: true, Description: "Cluster connection the vDC lives on; the connection_id of its VMs."},
 		"pool":            schema.StringAttribute{Computed: true, Description: "Proxmox resource pool of the vDC."},
 		"nodes":           computedStrings("Nodes the vDC may place VMs on; target_node of a proxcenter_vm."),
 		"storages":        computedStrings("Storages the vDC may use."),
-		"primary_storage": schema.StringAttribute{Computed: true},
+		"primary_storage": cStr("Default storage of the vDC."),
 		"quota": schema.SingleNestedAttribute{Computed: true, Description: "Quota; a null limit is unlimited.", Attributes: map[string]schema.Attribute{
-			"max_vcpus": intAttr, "max_ram_mb": intAttr, "max_storage_mb": intAttr, "max_vms": intAttr,
+			"max_vcpus": cInt("vCPU limit."), "max_ram_mb": cInt("Memory limit, MiB."), "max_storage_mb": cInt("Storage limit, MiB."), "max_vms": cInt("Guest count limit."),
 		}},
 		"usage": schema.SingleNestedAttribute{Computed: true, Description: "Usage computed by ProxCenter.", Attributes: map[string]schema.Attribute{
-			"used_vcpus": intAttr, "used_ram_mb": intAttr, "used_storage_mb": intAttr, "used_vms": intAttr,
+			"used_vcpus": cInt("vCPUs in use."), "used_ram_mb": cInt("Memory in use, MiB."), "used_storage_mb": cInt("Storage in use, MiB."), "used_vms": cInt("Guests in the vDC."),
 		}},
 	}
 	if lookup {
@@ -141,7 +140,7 @@ func (d *vdcsDataSource) Schema(_ context.Context, _ datasource.SchemaRequest, r
 	resp.Schema = schema.Schema{
 		Description: "Every vDC the token sees. Needs vms:read or vdcs:read.",
 		Attributes: map[string]schema.Attribute{
-			"vdcs": schema.ListNestedAttribute{Computed: true, NestedObject: schema.NestedAttributeObject{Attributes: vdcAttributes(false)}},
+			"vdcs": schema.ListNestedAttribute{Computed: true, Description: "The vDCs.", NestedObject: schema.NestedAttributeObject{Attributes: vdcAttributes(false)}},
 		},
 	}
 }

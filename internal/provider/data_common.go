@@ -60,3 +60,13 @@ func optionalString(v string) types.String {
 func computedStrings(desc string) schema.ListAttribute {
 	return schema.ListAttribute{Computed: true, ElementType: types.StringType, Description: desc}
 }
+
+func cStr(desc string) schema.StringAttribute {
+	return schema.StringAttribute{Computed: true, Description: desc}
+}
+func cInt(desc string) schema.Int64Attribute {
+	return schema.Int64Attribute{Computed: true, Description: desc}
+}
+func cBool(desc string) schema.BoolAttribute {
+	return schema.BoolAttribute{Computed: true, Description: desc}
+}
