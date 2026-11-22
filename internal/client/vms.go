@@ -32,6 +32,7 @@ type GuestConfig struct {
 type CloneRequest struct {
 	NewID       int    `json:"newid"`
 	Name        string `json:"name,omitempty"`
+	Hostname    string `json:"hostname,omitempty"` // a container's name
 	Description string `json:"description,omitempty"`
 	Storage     string `json:"storage,omitempty"`
 	Target      string `json:"target,omitempty"`
@@ -72,8 +73,31 @@ func guestPath(conn, node string, typ GuestType, vmid int) string {
 // CreateGuest creates a VM or a container from a Proxmox create body and
 // waits for the task. The API applies the vDC rules to the body first.
 func (c *Client) CreateGuest(ctx context.Context, conn, node string, typ GuestType, body map[string]any) error {
+	upid, taskNode, err := c.StartCreateGuest(ctx, conn, node, typ, body)
+	if err != nil || upid == "" {
+		return err
+	}
+	return c.WaitTask(ctx, conn, taskNode, upid)
+}
+
+// StartCreateGuest asks for the creation and returns its task without
+// waiting: an error means nothing was created.
+func (c *Client) StartCreateGuest(ctx context.Context, conn, node string, typ GuestType, body map[string]any) (upid, taskNode string, err error) {
 	path := fmt.Sprintf("/api/v1/connections/%s/guests/%s/%s", url.PathEscape(conn), url.PathEscape(string(typ)), url.PathEscape(node))
-	return c.writeAndWait(ctx, http.MethodPost, path, nil, body, conn, node)
+	var out upidAnswer
+	err = c.do(ctx, http.MethodPost, path, nil, body, &out)
+	c.invalidate(conn)
+	if err != nil {
+		return "", "", err
+	}
+	taskNode = out.Node
+	if taskNode == "" {
+		taskNode = node
+	}
+	if out.Data != nil {
+		upid = *out.Data
+	}
+	return upid, taskNode, nil
 }
 
 // NextID asks for the next free VMID (inside the tenant range for a tenant).

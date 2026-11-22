@@ -171,7 +171,7 @@ func (r *lxcResource) Schema(ctx context.Context, _ resource.SchemaRequest, resp
 					"bridge":      schema.StringAttribute{Required: true, Description: "Bridge or VNet (pve_name of data.proxcenter_vnets)."},
 					"vlan":        schema.Int64Attribute{Optional: true, Description: "VLAN tag; a vDC tenant token needs vms:nic."},
 					"ip":          schema.StringAttribute{Optional: true, Computed: true, Description: "dhcp or an address in CIDR form. ProxCenter allocates no IPAM address to a container.", PlanModifiers: keep},
-					"gateway":     schema.StringAttribute{Optional: true, Description: "Gateway of a static address."},
+					"gateway":     schema.StringAttribute{Optional: true, Computed: true, Description: "Gateway of a static address; unset keeps what is set.", PlanModifiers: keep},
 					"firewall":    schema.BoolAttribute{Optional: true, Computed: true, Description: "Proxmox firewall on the card; unset keeps what is set.", PlanModifiers: []planmodifier.Bool{boolUseStateForUnknown()}},
 					"mac_address": schema.StringAttribute{Optional: true, Computed: true, Description: "A vDC tenant token needs vms:nic to set it.", PlanModifiers: keep},
 				}},
@@ -271,6 +271,9 @@ func (r *lxcResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanReq
 			if n.IP.IsNull() {
 				n.IP = types.StringUnknown()
 			}
+			if n.Gateway.IsNull() {
+				n.Gateway = types.StringUnknown()
+			}
 		}
 	}
 	if !resp.Diagnostics.HasError() {
@@ -338,7 +341,7 @@ func modelToCT(m lxcModel) vmconfig.CT {
 		ct.MountPoints = append(ct.MountPoints, vmconfig.MountPoint{Slot: mp.Slot.ValueString(), Storage: mp.Storage.ValueString(), Path: mp.Path.ValueString(), SizeGB: mp.SizeGB.ValueInt64()})
 	}
 	for i, n := range m.Networks {
-		nic := vmconfig.CTNIC{Slot: known(n.Slot), Name: known(n.Name), Bridge: n.Bridge.ValueString(), IP: known(n.IP), Gateway: n.Gateway.ValueString(), MAC: known(n.MACAddress)}
+		nic := vmconfig.CTNIC{Slot: known(n.Slot), Name: known(n.Name), Bridge: n.Bridge.ValueString(), IP: known(n.IP), Gateway: known(n.Gateway), MAC: known(n.MACAddress)}
 		if nic.Slot == "" {
 			nic.Slot = "net" + strconv.Itoa(i)
 		}
