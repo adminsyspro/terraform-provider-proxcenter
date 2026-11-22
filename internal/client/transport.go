@@ -25,7 +25,8 @@ var gatewayBackoff = []time.Duration{time.Second, 2 * time.Second, 4 * time.Seco
 
 // do sends one API call. body, when not nil, is sent as JSON; out, when not
 // nil, receives the decoded 2xx body. A 429 is retried after Retry-After for
-// any method; 502/503/504 only for GET. Any other non 2xx is an *APIError.
+// any method; 502/503/504 only for GET and only when they are not a
+// ProxCenter JSON error. Any other non 2xx is an *APIError.
 func (c *Client) do(ctx context.Context, method, path string, query url.Values, body, out any) error {
 	var payload []byte
 	if body != nil {
@@ -53,7 +54,7 @@ func (c *Client) do(ctx context.Context, method, path string, query url.Values, 
 				return err
 			}
 			continue
-		case isGatewayError(res.StatusCode) && method == http.MethodGet && gateway < len(gatewayBackoff):
+		case isGatewayError(res.StatusCode) && method == http.MethodGet && gateway < len(gatewayBackoff) && !isProxCenterError(raw):
 			wait := gatewayBackoff[gateway]
 			gateway++
 			if err := c.sleep(ctx, wait); err != nil {
@@ -102,6 +103,16 @@ func (c *Client) send(ctx context.Context, method, target string, payload []byte
 		return nil, nil, fmt.Errorf("reading the ProxCenter answer: %w", err)
 	}
 	return &answer{StatusCode: res.StatusCode, Header: res.Header}, raw, nil
+}
+
+// isProxCenterError tells a deliberate ProxCenter refusal (JSON with an
+// error or message) from a proxy or gateway page.
+func isProxCenterError(raw []byte) bool {
+	var body struct {
+		Error   string `json:"error"`
+		Message string `json:"message"`
+	}
+	return json.Unmarshal(raw, &body) == nil && (body.Error != "" || body.Message != "")
 }
 
 func isGatewayError(code int) bool {

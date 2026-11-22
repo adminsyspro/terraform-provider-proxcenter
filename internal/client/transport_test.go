@@ -204,3 +204,13 @@ func TestTokenNeverInErrors(t *testing.T) {
 		t.Fatalf("error leaks the token: %v", err)
 	}
 }
+
+func TestProxCenterJSON503IsNotRetried(t *testing.T) {
+	srv, calls := scripted(t, status(503, `{"error":"Cannot verify VMID uniqueness across your clusters"}`), status(200, `{}`))
+	c := newTestClient(t, srv.URL)
+	recordSleeps(c)
+	err := c.do(context.Background(), http.MethodGet, "/api/v1/x", nil, nil, nil)
+	if err == nil || *calls != 1 || !strings.Contains(err.Error(), "Cannot verify VMID uniqueness") {
+		t.Fatalf("calls=%d err=%v", *calls, err)
+	}
+}

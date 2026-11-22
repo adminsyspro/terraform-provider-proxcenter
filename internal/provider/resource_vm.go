@@ -346,4 +346,3 @@ func parseVMID(id string) (string, int, error) {
 	}
 	return id[:i], n, nil
 }
-

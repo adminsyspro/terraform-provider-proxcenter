@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
+	"github.com/hashicorp/terraform-plugin-testing/terraform"
 )
 
 // fakeVM is a guest of the fake ProxCenter.
@@ -46,6 +48,9 @@ type fakeAPI struct {
 	deployments map[string]map[string]any
 	nextIDs     []int
 	nextIDCalls int
+	// cloneProvisioning and cloneFailures seed every new clone.
+	cloneProvisioning []string
+	cloneFailures     []string
 	// pendingKeys land in Pending instead of Config while the VM runs.
 	pendingKeys map[string]bool
 	calls       []string
@@ -118,6 +123,30 @@ func (f *fakeAPI) allBodies(key string) []map[string]any {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]map[string]any(nil), f.bodies[key]...)
+}
+
+// withTemplate seeds template 9000 on pve1, as on the lab.
+func (f *fakeAPI) withTemplate() *fakeAPI {
+	f.addVM(9000, &fakeVM{Node: "pve1", Status: "stopped", Config: map[string]any{
+		"name": "tpl-debian", "template": "1", "cores": float64(1), "sockets": float64(1), "memory": "1024", "cpu": "host",
+		"scsi0": "ceph-gold:base-9000-disk-0,size=8G", "net0": "virtio=BC:24:11:00:90:00,bridge=vmbr0,firewall=1",
+		"ide2": "ceph-gold:vm-9000-cloudinit,media=cdrom", "ipconfig0": "ip=dhcp",
+	}})
+	return f
+}
+
+// noVMs is a CheckDestroy asserting the fake holds no VM but the seeded ones.
+func (f *fakeAPI) noVMsBut(keep ...int) func(*terraform.State) error {
+	return func(*terraform.State) error {
+		f.mu.Lock()
+		defer f.mu.Unlock()
+		for id := range f.vms {
+			if !slices.Contains(keep, id) {
+				return fmt.Errorf("VM %d still exists after destroy", id)
+			}
+		}
+		return nil
+	}
 }
 
 func (f *fakeAPI) vm(vmid int) *fakeVM {
@@ -419,7 +448,8 @@ func (f *fakeAPI) guest(w http.ResponseWriter, r *http.Request, node string, vmi
 		if t, ok := body["target"].(string); ok && t != "" {
 			target = t
 		}
-		f.vms[newid] = &fakeVM{Node: target, Status: "stopped", Config: cfg, Pending: map[string]any{}}
+		f.vms[newid] = &fakeVM{Node: target, Status: "stopped", Config: cfg, Pending: map[string]any{},
+			Provisioning: append([]string(nil), f.cloneProvisioning...), Failures: f.cloneFailures}
 		reply(w, 200, upid)
 	case rest == "" && r.Method == http.MethodDelete:
 		if vm.Status == "running" {
