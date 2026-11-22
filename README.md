@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <a href="https://registry.terraform.io/providers/adminsyspro/proxcenter/latest"><img src="https://img.shields.io/badge/Terraform%20Registry-adminsyspro%2Fproxcenter-E57000?style=flat-square&logo=terraform&logoColor=white&labelColor=1C1C24" alt="Terraform Registry"></a>
+  <a href="https://github.com/adminsyspro/terraform-registry"><img src="https://img.shields.io/badge/Registry-registry.proxcenter.io-E57000?style=flat-square&logo=terraform&logoColor=white&labelColor=1C1C24" alt="registry.proxcenter.io"></a>
   <a href="https://github.com/adminsyspro/terraform-provider-proxcenter/releases"><img src="https://img.shields.io/github/v/release/adminsyspro/terraform-provider-proxcenter?style=flat-square&label=Release&color=E57000&labelColor=1C1C24" alt="Latest release"></a>
   <a href="https://developer.hashicorp.com/terraform/install"><img src="https://img.shields.io/badge/Terraform-1.11%2B-F28C28?style=flat-square&logo=terraform&logoColor=white&labelColor=1C1C24" alt="Terraform 1.11 or later"></a>
   <a href="https://www.proxcenter.io/"><img src="https://img.shields.io/badge/ProxCenter-1.5%2B-F28C28?style=flat-square&labelColor=1C1C24" alt="ProxCenter 1.5 or later"></a>
@@ -20,7 +20,7 @@
 </p>
 
 <p align="center">
-  <a href="https://www.proxcenter.io/"><b>🌐 Website</b></a> · <a href="https://registry.terraform.io/providers/adminsyspro/proxcenter/latest/docs"><b>📖 Provider documentation</b></a> · <a href="https://docs.proxcenter.io/"><b>📚 ProxCenter documentation</b></a>
+  <a href="https://www.proxcenter.io/"><b>🌐 Website</b></a> · <a href="docs/"><b>📖 Provider documentation</b></a> · <a href="https://docs.proxcenter.io/"><b>📚 ProxCenter documentation</b></a>
 </p>
 
 ---
@@ -58,8 +58,8 @@ It talks to ProxCenter only, with a `pxc_` API token: the same configuration wor
 terraform {
   required_providers {
     proxcenter = {
-      source  = "adminsyspro/proxcenter"
-      version = "~> 0.1"
+      source  = "registry.proxcenter.io/adminsyspro/proxcenter"
+      version = "~> 0.2"
     }
   }
 }
@@ -128,7 +128,7 @@ terraform apply
 | Data source | `proxcenter_vnets` | networks of a vDC, with their subnet and IPAM state |
 | Data source | `proxcenter_vms` | VMs of a connection, to find a template to clone |
 
-Every attribute is described in the [provider documentation](https://registry.terraform.io/providers/adminsyspro/proxcenter/latest/docs), generated from this repository's [docs/](docs/).
+Every attribute is described in the [provider documentation](docs/), generated from the schemas.
 
 ---
 
@@ -191,12 +191,12 @@ export PROXCENTER_TEST_CONNECTION=... PROXCENTER_TEST_NODE=pve1 PROXCENTER_TEST_
 make testacc
 ```
 
-To try a local build without the registry, point Terraform at it in `~/.terraformrc`:
+To try a local build instead of the published release, point Terraform at it in `~/.terraformrc`:
 
 ```hcl
 provider_installation {
   dev_overrides {
-    "adminsyspro/proxcenter" = "/path/to/your/go/bin"
+    "registry.proxcenter.io/adminsyspro/proxcenter" = "/path/to/your/go/bin"
   }
   direct {}
 }
