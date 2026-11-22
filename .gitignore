@@ -1,0 +1,7 @@
+.superpowers/
+/terraform-provider-proxcenter
+*.test
+coverage.out
+.terraform/
+*.tfstate*
+.terraform.lock.hcl
