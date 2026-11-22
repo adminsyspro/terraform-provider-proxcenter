@@ -23,6 +23,9 @@ func Parse(data map[string]any) (VM, error) {
 	vm.CPU = str(data["cpu"])
 	for key, dst := range map[string]*int64{"cores": &vm.Cores, "sockets": &vm.Sockets, "memory": &vm.MemoryMB} {
 		if v, ok := data[key]; ok && v != nil {
+			if key == "memory" {
+				v = memoryCurrent(v)
+			}
 			n, err := toInt(v)
 			if err != nil {
 				return VM{}, fmt.Errorf("config key %s: %w", key, err)
@@ -45,6 +48,24 @@ func Parse(data map[string]any) (VM, error) {
 	sort.Slice(vm.NICs, func(i, j int) bool { return slotLess(vm.NICs[i].Slot, vm.NICs[j].Slot) })
 	vm.CloudInit = parseCloudInit(data)
 	return vm, nil
+}
+
+// memoryCurrent reads a memory property string ("8192,max=32768" or
+// "current=8192") as its current size.
+func memoryCurrent(v any) any {
+	s, ok := v.(string)
+	if !ok || !strings.ContainsAny(s, ",=") {
+		return v
+	}
+	for _, o := range splitOptions(s) {
+		if o.key == "current" {
+			return o.value
+		}
+		if o.key == "" {
+			return o.raw
+		}
+	}
+	return v
 }
 
 func parseDisk(key, value string) (Disk, bool) {

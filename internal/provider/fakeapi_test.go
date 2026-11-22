@@ -17,6 +17,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
+	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/terraform"
 )
 
@@ -152,6 +153,13 @@ func (f *fakeAPI) noVMsBut(keep ...int) func(*terraform.State) error {
 		}
 		return nil
 	}
+}
+
+// afterError is the step that follows a failed apply: its config drops the
+// resource, so a VM kept in state (tainted) is destroyed, then check runs.
+// CheckDestroy alone is skipped when the failed apply left the state empty.
+func (f *fakeAPI) afterError(check resource.TestCheckFunc) resource.TestStep {
+	return resource.TestStep{Config: f.config(""), Check: check}
 }
 
 func (f *fakeAPI) vm(vmid int) *fakeVM { //nolint:unparam // every test so far reads the first VMID

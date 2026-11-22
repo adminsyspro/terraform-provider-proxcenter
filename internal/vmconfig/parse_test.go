@@ -100,3 +100,12 @@ func TestParseRejectsBadNumber(t *testing.T) {
 		t.Fatal("bad cores accepted")
 	}
 }
+
+func TestParseMemoryProperty(t *testing.T) {
+	for in, want := range map[string]int64{"8192,max=32768": 8192, "current=4096,max=8192": 4096, "2048": 2048} {
+		vm, err := Parse(map[string]any{"memory": in})
+		if err != nil || vm.MemoryMB != want {
+			t.Errorf("memory %q: got %d, %v", in, vm.MemoryMB, err)
+		}
+	}
+}

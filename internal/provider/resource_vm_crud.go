@@ -3,6 +3,7 @@ package provider
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -170,20 +171,49 @@ func (r *vmResource) createFromCatalogue(ctx context.Context, plan vmModel, node
 		}
 		dep, err := r.waitDeployment(ctx, res.DeploymentID)
 		if err != nil {
-			return vmid, node, r.vmExists(ctx, conn, node, vmid), fmt.Errorf("following deployment %s: %w", res.DeploymentID, err)
+			own := r.ownVM(ctx, conn, node, vmid, plan.Name.ValueString())
+			return vmid, node, own, fmt.Errorf("following deployment %s of VMID %d: %w; it may still be running in ProxCenter", res.DeploymentID, vmid, err)
 		}
 		if dep.Node != "" {
 			node = dep.Node
 		}
-		if dep.Status == "failed" {
-			if auto && client.IsVMIDClashText(dep.Error) && attempt < maxVMIDAttempts {
-				continue // another guest holds that VMID: never ours to keep
-			}
-			exists := !client.IsVMIDClashText(dep.Error) && r.vmExists(ctx, conn, node, vmid)
-			return vmid, node, exists, fmt.Errorf("deployment %s failed at %s: %s", res.DeploymentID, dep.CurrentStep, dep.Error)
+		if dep.Status != "failed" {
+			return vmid, node, true, nil
 		}
-		return vmid, node, true, nil
+		failure := fmt.Errorf("deployment %s failed at %s: %s", res.DeploymentID, dep.CurrentStep, dep.Error)
+		retryable := auto && client.IsVMIDClashText(dep.Error) && attempt < maxVMIDAttempts
+		if !deploymentMayHaveCreated(dep.CurrentStep) {
+			if retryable {
+				continue
+			}
+			return 0, "", false, failure // nothing was created
+		}
+		own := r.ownVM(ctx, conn, node, vmid, plan.Name.ValueString())
+		if !own && retryable && dep.CurrentStep == "creating" {
+			continue // the create itself hit a VMID another guest holds
+		}
+		return vmid, node, own, failure
 	}
+}
+
+// deploymentMayHaveCreated tells whether a deployment that stopped at step
+// may have created its VM: before "creating" nothing exists.
+func deploymentMayHaveCreated(step string) bool {
+	switch step {
+	case "", "pending", "downloading":
+		return false
+	}
+	return true
+}
+
+// ownVM tells whether vmid is the VM this resource asked for: it exists and
+// bears the requested name. It runs even after the create context expired,
+// so a timeout never loses a VM the provider made.
+func (r *vmResource) ownVM(ctx context.Context, conn, node string, vmid int, name string) bool {
+	probe, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	cfg, err := r.client.GetConfig(probe, conn, node, vmid)
+	return err == nil && cfg.Data["name"] == name
 }
 
 func deployCloudInit(ci *cloudInitModel, password string) *client.DeployCloudInit {
@@ -217,11 +247,6 @@ func (r *vmResource) waitDeployment(ctx context.Context, id string) (client.Depl
 	}
 }
 
-func (r *vmResource) vmExists(ctx context.Context, conn, node string, vmid int) bool {
-	_, err := r.client.GetConfig(ctx, conn, node, vmid)
-	return err == nil
-}
-
 func (r *vmResource) createFromClone(ctx context.Context, plan vmModel, configTarget string) (int, string, bool, error) {
 	conn := plan.ConnectionID.ValueString()
 	srcID := int(plan.Source.CloneOf.ValueInt64())
@@ -252,14 +277,22 @@ func (r *vmResource) createFromClone(ctx context.Context, plan vmModel, configTa
 			return 0, "", false, fmt.Errorf("getting a VMID: %w", err)
 		}
 		req.NewID = vmid
-		if err := r.client.Clone(ctx, conn, src.Node, srcID, req); err != nil {
+		upid, taskNode, err := r.client.StartClone(ctx, conn, src.Node, srcID, req)
+		if err != nil {
+			// Refused: Proxmox created nothing, whatever holds that VMID.
 			if auto && client.IsVMIDClash(err) {
 				if attempt < maxVMIDAttempts {
 					continue
 				}
 				return 0, "", false, fmt.Errorf("%w\n(no free VMID after %d attempts)", err, maxVMIDAttempts)
 			}
-			return vmid, target, !client.IsVMIDClash(err) && r.vmExists(ctx, conn, target, vmid), err
+			return 0, "", false, err
+		}
+		// Accepted: the clone is ours from here, even if waiting fails.
+		if upid != "" {
+			if err := r.client.WaitTask(ctx, conn, taskNode, upid); err != nil {
+				return vmid, target, true, fmt.Errorf("cloning VM %d into %d: %w", srcID, vmid, err)
+			}
 		}
 		return vmid, target, true, r.waitProvisioning(ctx, conn, target, vmid)
 	}
@@ -300,6 +333,11 @@ func (r *vmResource) configureCreated(ctx context.Context, conn, node string, vm
 		return err
 	}
 	desired := modelToVM(plan)
+	// dhcp on an IPAM VNet was turned by ProxCenter into the address it
+	// allocated: the request is met, never push dhcp back.
+	if desired.CloudInit != nil && desired.CloudInit.IP == "dhcp" && current.CloudInit != nil && current.CloudInit.IP != "" {
+		desired.CloudInit.IP, desired.CloudInit.Gateway = current.CloudInit.IP, current.CloudInit.Gateway
+	}
 	current.Disks = onlySlots(current.Disks, desired.Disks, func(d vmconfig.Disk) string { return d.Slot })
 	current.NICs = onlySlots(current.NICs, desired.NICs, func(n vmconfig.NIC) string { return n.Slot })
 	changes, err := vmconfig.ConfigChanges(current, desired, cfg.Data)
@@ -488,11 +526,23 @@ func readDisks(have []vmconfig.Disk, prior []diskModel, importing bool) []diskMo
 }
 
 func readNICs(have []vmconfig.NIC, prior []networkModel, importing bool) []networkModel {
+	priorBySlot := map[string]networkModel{}
+	for i, p := range prior {
+		slot := p.Slot.ValueString()
+		if p.Slot.IsUnknown() || slot == "" {
+			slot = fmt.Sprintf("net%d", i)
+		}
+		priorBySlot[slot] = p
+	}
 	toModel := func(n vmconfig.NIC) networkModel {
 		m := networkModel{Slot: types.StringValue(n.Slot), Bridge: types.StringValue(n.Bridge), Model: types.StringValue(n.Model),
 			MACAddress: optionalString(n.MAC), VLAN: types.Int64Null(), Firewall: types.BoolValue(n.Firewall != nil && *n.Firewall)}
 		if n.VLAN != nil {
 			m.VLAN = types.Int64Value(*n.VLAN)
+		}
+		// The same MAC written in another case is the user's value.
+		if p, ok := priorBySlot[n.Slot]; ok && !p.MACAddress.IsUnknown() && strings.EqualFold(p.MACAddress.ValueString(), n.MAC) {
+			m.MACAddress = p.MACAddress
 		}
 		return m
 	}
@@ -535,8 +585,18 @@ func readCloudInit(have *vmconfig.CloudInit, prior *cloudInitModel, importing bo
 	if len(have.SSHKeys) > 0 {
 		m.SSHKeys = stringList(have.SSHKeys)
 	}
+	// Keys written with trailing newlines, or several per item (a whole
+	// authorized_keys file), are the same keys once normalised.
+	if prior != nil && !prior.SSHKeys.IsNull() && !prior.SSHKeys.IsUnknown() && slices.Equal(normalizeKeys(prior.SSHKeys), have.SSHKeys) {
+		m.SSHKeys = prior.SSHKeys
+	}
 	m.Gateway, m.Nameserver, m.SearchDomain = optionalString(have.Gateway), optionalString(have.Nameserver), optionalString(have.SearchDomain)
 	m.IP = optionalString(have.IP)
+	// dhcp on an IPAM VNet comes back as the address ProxCenter allocated:
+	// the request is met, ip_address tells the address.
+	if prior != nil && prior.IP.ValueString() == "dhcp" && have.IP != "" {
+		m.IP = prior.IP
+	}
 	m.IPAddress = types.StringNull()
 	switch {
 	case have.IP != "" && have.IP != "dhcp":
@@ -545,6 +605,21 @@ func readCloudInit(have *vmconfig.CloudInit, prior *cloudInitModel, importing bo
 		m.IPAddress = types.StringValue(ips[0])
 	}
 	return &m
+}
+
+// normalizeKeys is the list of keys a ssh_keys value holds, one per line.
+func normalizeKeys(l types.List) []string {
+	var out []string
+	for _, e := range l.Elements() {
+		if s, ok := e.(types.String); ok {
+			for _, line := range strings.Split(s.ValueString(), "\n") {
+				if line = strings.TrimSpace(line); line != "" {
+					out = append(out, line)
+				}
+			}
+		}
+	}
+	return out
 }
 
 // nullUnknowns turns the computed values still unknown into nulls: a state
@@ -642,6 +717,14 @@ func (r *vmResource) Update(ctx context.Context, req resource.UpdateRequest, res
 	}
 	final.PowerState = plan.PowerState
 	final.TargetNode = state.TargetNode
+	// What the plan already knew stays: a value the guest agent or DRS
+	// changed meanwhile is picked up by the next refresh.
+	if !plan.Node.IsUnknown() {
+		final.Node = plan.Node
+	}
+	if plan.CloudInit != nil && final.CloudInit != nil && !plan.CloudInit.IPAddress.IsUnknown() {
+		final.CloudInit.IPAddress = plan.CloudInit.IPAddress
+	}
 	nullUnknowns(&final)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &final)...)
 }

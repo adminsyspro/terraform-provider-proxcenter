@@ -210,11 +210,11 @@ func TestCreateCloneProvisioningFailed(t *testing.T) {
 	f.cloneFailures = []string{"ipam: no free address in 10.15.15.0/24"}
 	resource.UnitTest(t, resource.TestCase{
 		ProtoV6ProviderFactories: f.providerFactories(),
-		CheckDestroy:             f.noVMsBut(9000),
-		Steps: []resource.TestStep{{
-			Config:      f.config(cloneVM),
-			ExpectError: regexp.MustCompile(`no free address in\s+10\.15\.15\.0/24`),
-		}},
+		Steps: []resource.TestStep{
+			{Config: f.config(cloneVM),
+				ExpectError: regexp.MustCompile(`no free address in\s+10\.15\.15\.0/24`)},
+			f.afterError(resource.TestCheckFunc(f.noVMsBut(9000))),
+		},
 	})
 }
 
@@ -227,16 +227,16 @@ func TestCreateDeploymentFailedKeepsVMInState(t *testing.T) {
 	})
 	resource.UnitTest(t, resource.TestCase{
 		ProtoV6ProviderFactories: f.providerFactories(),
-		CheckDestroy: resource.ComposeTestCheckFunc(f.noVMsBut(), check(func() error {
-			if f.nextIDCalls != 1 {
-				return fmt.Errorf("nextid called %d times, a failed deployment must not allocate another VMID", f.nextIDCalls)
-			}
-			return nil
-		})),
-		Steps: []resource.TestStep{{
-			Config:      f.config(fmt.Sprintf(catalogueVM, "stopped")),
-			ExpectError: regexp.MustCompile(`storage\s+ceph-gold\s+is\s+full`),
-		}},
+		Steps: []resource.TestStep{
+			{Config: f.config(fmt.Sprintf(catalogueVM, "stopped")),
+				ExpectError: regexp.MustCompile(`storage\s+ceph-gold\s+is\s+full`)},
+			f.afterError(resource.ComposeTestCheckFunc(f.noVMsBut(), check(func() error {
+				if f.nextIDCalls != 1 {
+					return fmt.Errorf("nextid called %d times, a failed deployment must not allocate another VMID", f.nextIDCalls)
+				}
+				return nil
+			}))),
+		},
 	})
 }
 
@@ -275,11 +275,11 @@ func TestCreateStopsAfterFiveClashes(t *testing.T) {
 	}
 	resource.UnitTest(t, resource.TestCase{
 		ProtoV6ProviderFactories: f.providerFactories(),
-		CheckDestroy:             f.noVMsBut(keep...),
-		Steps: []resource.TestStep{{
-			Config:      f.config(fmt.Sprintf(catalogueVM, "stopped")),
-			ExpectError: regexp.MustCompile(`(?s)VMID\s+9109\s+is\s+already\s+in\s+use.*5\s+attempts`),
-		}},
+		Steps: []resource.TestStep{
+			{Config: f.config(fmt.Sprintf(catalogueVM, "stopped")),
+				ExpectError: regexp.MustCompile(`(?s)VMID\s+9109\s+is\s+already\s+in\s+use.*5\s+attempts`)},
+			f.afterError(resource.TestCheckFunc(f.noVMsBut(keep...))),
+		},
 	})
 }
 
@@ -288,16 +288,16 @@ func TestCreateNextIDUnavailable(t *testing.T) {
 	f.nextIDs = nil
 	resource.UnitTest(t, resource.TestCase{
 		ProtoV6ProviderFactories: f.providerFactories(),
-		CheckDestroy: check(func() error {
-			if f.nextIDCalls != 1 {
-				return fmt.Errorf("nextid called %d times, a 503 is not a VMID clash", f.nextIDCalls)
-			}
-			return nil
-		}),
-		Steps: []resource.TestStep{{
-			Config:      f.config(fmt.Sprintf(catalogueVM, "stopped")),
-			ExpectError: regexp.MustCompile(`no free VMID`),
-		}},
+		Steps: []resource.TestStep{
+			{Config: f.config(fmt.Sprintf(catalogueVM, "stopped")),
+				ExpectError: regexp.MustCompile(`no free VMID`)},
+			f.afterError(check(func() error {
+				if f.nextIDCalls != 1 {
+					return fmt.Errorf("nextid called %d times, a 503 is not a VMID clash", f.nextIDCalls)
+				}
+				return nil
+			})),
+		},
 	})
 }
 
@@ -309,10 +309,10 @@ func TestCreateQuotaRefusalShownVerbatim(t *testing.T) {
 	})
 	resource.UnitTest(t, resource.TestCase{
 		ProtoV6ProviderFactories: f.providerFactories(),
-		CheckDestroy:             f.noVMsBut(),
-		Steps: []resource.TestStep{{
-			Config:      f.config(fmt.Sprintf(catalogueVM, "stopped")),
-			ExpectError: regexp.MustCompile(`(?s)Quota exceeded.*RAM:\s+60/64\s+GB,\s+\+8\s+GB\s+exceeds\s+quota.*VMs:\s+7/7`),
-		}},
+		Steps: []resource.TestStep{
+			{Config: f.config(fmt.Sprintf(catalogueVM, "stopped")),
+				ExpectError: regexp.MustCompile(`(?s)Quota exceeded.*RAM:\s+60/64\s+GB,\s+\+8\s+GB\s+exceeds\s+quota.*VMs:\s+7/7`)},
+			f.afterError(resource.TestCheckFunc(f.noVMsBut())),
+		},
 	})
 }

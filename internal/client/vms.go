@@ -77,6 +77,25 @@ func (c *Client) Clone(ctx context.Context, conn, node string, vmid int, req Clo
 	return c.writeAndWait(ctx, http.MethodPost, guestPath(conn, node, vmid)+"/clone", nil, req, conn, node)
 }
 
+// StartClone asks for a clone and returns its task without waiting: an
+// error here means Proxmox created nothing; a task means the clone exists.
+func (c *Client) StartClone(ctx context.Context, conn, node string, vmid int, req CloneRequest) (upid, taskNode string, err error) {
+	var out upidAnswer
+	err = c.do(ctx, http.MethodPost, guestPath(conn, node, vmid)+"/clone", nil, req, &out)
+	c.invalidate(conn)
+	if err != nil {
+		return "", "", err
+	}
+	taskNode = out.Node
+	if taskNode == "" {
+		taskNode = node
+	}
+	if out.Data != nil {
+		upid = *out.Data
+	}
+	return upid, taskNode, nil
+}
+
 // GetConfig reads the config of a guest; a 404 is IsNotFound.
 func (c *Client) GetConfig(ctx context.Context, conn, node string, vmid int) (GuestConfig, error) {
 	var out struct {

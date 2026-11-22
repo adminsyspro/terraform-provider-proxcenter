@@ -13,12 +13,10 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -119,11 +117,12 @@ func (r *vmResource) Schema(ctx context.Context, _ resource.SchemaRequest, resp 
 			"target_node": schema.StringAttribute{Optional: true, Computed: true, Description: "Node to create the VM on; required for a catalogue source, defaults to the source's node for a clone. Ignored after creation.", PlanModifiers: keep},
 			"name":        schema.StringAttribute{Required: true},
 			"cores":       schema.Int64Attribute{Required: true},
-			"sockets":     schema.Int64Attribute{Optional: true, Computed: true, Default: int64default.StaticInt64(1)},
-			"memory_mb":   schema.Int64Attribute{Required: true},
-			"cpu":         schema.StringAttribute{Optional: true, Computed: true, Description: "CPU model; unset keeps what ProxCenter set (vDC CPU policy).", PlanModifiers: keep},
-			"power_state": schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("running"),
-				Validators: []validator.String{stringvalidator.OneOf("running", "stopped")}},
+			"sockets": schema.Int64Attribute{Optional: true, Computed: true, Description: "Defaults to 1 at creation; unset keeps the VM's value.",
+				PlanModifiers: []planmodifier.Int64{int64planmodifier.UseStateForUnknown()}},
+			"memory_mb": schema.Int64Attribute{Required: true},
+			"cpu":       schema.StringAttribute{Optional: true, Computed: true, Description: "CPU model; unset keeps what ProxCenter set (vDC CPU policy).", PlanModifiers: keep},
+			"power_state": schema.StringAttribute{Optional: true, Computed: true, Description: "running or stopped; running at creation when unset, the VM's state otherwise.",
+				Validators: []validator.String{stringvalidator.OneOf("running", "stopped")}, PlanModifiers: keep},
 			"reboot_on_change": schema.BoolAttribute{Optional: true, Computed: true, Default: booldefault.StaticBool(false),
 				Description: "Reboot the VM when a change waits for a reboot; false only warns."},
 			"force_stop": schema.BoolAttribute{Optional: true, Computed: true, Default: booldefault.StaticBool(false),
@@ -155,7 +154,7 @@ func (r *vmResource) Schema(ctx context.Context, _ resource.SchemaRequest, resp 
 					"slot":        schema.StringAttribute{Optional: true, Computed: true, Description: "net0, net1...; defaults to net<index>.", PlanModifiers: keep},
 					"bridge":      schema.StringAttribute{Required: true, Description: "Bridge or VNet (pve_name of data.proxcenter_vnets)."},
 					"vlan":        schema.Int64Attribute{Optional: true, Description: "VLAN tag; a vDC tenant token needs vms:nic."},
-					"model":       schema.StringAttribute{Optional: true, Computed: true, Default: stringdefault.StaticString("virtio")},
+					"model":       schema.StringAttribute{Optional: true, Computed: true, Description: "virtio for a new card when unset; unset keeps an existing card's model.", PlanModifiers: keep},
 					"firewall":    schema.BoolAttribute{Optional: true, Computed: true, PlanModifiers: []planmodifier.Bool{boolUseStateForUnknown()}},
 					"mac_address": schema.StringAttribute{Optional: true, Computed: true, Description: "A vDC tenant token needs vms:nic to set it.", PlanModifiers: keep},
 				}},
@@ -188,6 +187,17 @@ func sourceChangeReplaces(_ context.Context, req planmodifier.ObjectRequest, res
 }
 
 func (r *vmResource) ValidateConfig(ctx context.Context, req resource.ValidateConfigRequest, resp *resource.ValidateConfigResponse) {
+	var nets []networkModel
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("network"), &nets)...)
+	if len(nets) > 1 {
+		for _, n := range nets {
+			if n.Slot.IsNull() {
+				resp.Diagnostics.AddAttributeError(path.Root("network"), "Missing network slot",
+					"Set slot (net0, net1...) on every network block when there are several network blocks: a list position is not a card's identity.")
+				break
+			}
+		}
+	}
 	var src *sourceModel
 	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("source"), &src)...)
 	if resp.Diagnostics.HasError() || src == nil {
@@ -228,6 +238,8 @@ func (r *vmResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequ
 		var targetNode types.String
 		resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("target_node"), &targetNode)...)
 		r.planCreate(&plan, targetNode, resp)
+		createDefaults(&plan)
+		changed = true
 	} else {
 		var state vmModel
 		resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
@@ -246,6 +258,14 @@ func (r *vmResource) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequ
 		}
 		if addressMayChange(state, plan) {
 			plan.CloudInit.IPAddress = types.StringUnknown()
+			var configIP types.String
+			if plan.CloudInit != nil {
+				resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("cloud_init").AtName("ip"), &configIP)...)
+			}
+			if configIP.IsNull() {
+				// ProxCenter re-allocates on an IPAM VNet: what it picks is unknown.
+				plan.CloudInit.IP, plan.CloudInit.Gateway = types.StringUnknown(), types.StringUnknown()
+			}
 			changed = true
 		}
 		if unknownNewComputed(&plan, state) {
@@ -270,6 +290,22 @@ func (r *vmResource) planCreate(plan *vmModel, configTargetNode types.String, re
 	}
 }
 
+// createDefaults sets what an unset attribute means for a new VM; after
+// creation an unset attribute keeps the VM's value.
+func createDefaults(plan *vmModel) {
+	if plan.Sockets.IsUnknown() {
+		plan.Sockets = types.Int64Value(1)
+	}
+	if plan.PowerState.IsUnknown() {
+		plan.PowerState = types.StringValue("running")
+	}
+	for i := range plan.Networks {
+		if plan.Networks[i].Model.IsUnknown() || plan.Networks[i].Model.IsNull() {
+			plan.Networks[i].Model = types.StringValue("virtio")
+		}
+	}
+}
+
 // unknownNewComputed marks unknown the computed values of what an update
 // adds (a NIC, a cloud_init block): the framework plans them null, and the
 // API is what sets them.
@@ -277,6 +313,9 @@ func unknownNewComputed(plan *vmModel, state vmModel) bool {
 	changed := false
 	for i := len(state.Networks); i < len(plan.Networks); i++ {
 		n := &plan.Networks[i]
+		if n.Model.IsNull() || n.Model.IsUnknown() {
+			n.Model, changed = types.StringValue("virtio"), true
+		}
 		if n.Firewall.IsNull() {
 			n.Firewall, changed = types.BoolUnknown(), true
 		}
@@ -358,12 +397,7 @@ func modelToVM(m vmModel) vmconfig.VM {
 		}
 		out := &vmconfig.CloudInit{User: known(ci.User), Gateway: known(ci.Gateway), Nameserver: known(ci.Nameserver), SearchDomain: known(ci.SearchDomain), IP: known(ci.IP)}
 		if !ci.SSHKeys.IsNull() && !ci.SSHKeys.IsUnknown() {
-			out.SSHKeys = []string{}
-			for _, e := range ci.SSHKeys.Elements() {
-				if s, ok := e.(types.String); ok {
-					out.SSHKeys = append(out.SSHKeys, strings.TrimSpace(s.ValueString()))
-				}
-			}
+			out.SSHKeys = append([]string{}, normalizeKeys(ci.SSHKeys)...)
 		}
 		vm.CloudInit = out
 	}

@@ -89,12 +89,12 @@ func TestChangesVLANKeepsMACAndSubkeys(t *testing.T) {
 	}
 }
 
-func TestChangesRemovedNICIsDeleted(t *testing.T) {
+func TestChangesRemovedNICIsError(t *testing.T) {
 	old := baseVM()
 	old.NICs = append(old.NICs, NIC{Slot: "net1", Model: "virtio", Bridge: "vnet2"})
-	c, err := ConfigChanges(old, baseVM(), raw)
-	if err != nil || c.Keys["delete"] != "net1" {
-		t.Fatalf("got %+v, %v", c, err)
+	_, err := ConfigChanges(old, baseVM(), raw)
+	if err == nil || !strings.Contains(err.Error(), "net1 is no longer described") {
+		t.Fatalf("got %v", err)
 	}
 }
 

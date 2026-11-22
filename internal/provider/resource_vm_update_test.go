@@ -64,7 +64,8 @@ func TestUpdateMoveDisk(t *testing.T) {
 
 func TestUpdateAddNIC(t *testing.T) {
 	f := newFakeAPI(t).withVDC()
-	second := variant("stopped", "  cloud_init {", "  network {\n    bridge = \"vnet2\"\n  }\n\n  cloud_init {")
+	// Several network blocks name their slots.
+	second := variant("stopped", "    bridge = \"vnet-prod\"", "    slot   = \"net0\"\n    bridge = \"vnet-prod\"", "  cloud_init {", "  network {\n    slot   = \"net1\"\n    bridge = \"vnet2\"\n  }\n\n  cloud_init {")
 	updateCase(t, f, variant("stopped"), second, resource.ComposeAggregateTestCheckFunc(
 		resource.TestCheckResourceAttr("proxcenter_vm.web", "network.1.slot", "net1"),
 		check(func() error {

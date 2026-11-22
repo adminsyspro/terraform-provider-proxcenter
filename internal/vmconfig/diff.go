@@ -8,8 +8,8 @@ import (
 
 // ConfigChanges is what turns old into desired. currentRaw is the config as
 // read, so a changed NIC keeps the sub-keys the provider does not manage.
-// A smaller disk or a disk no longer described is an error: Proxmox cannot
-// shrink, and the provider never detaches or destroys a disk on its own.
+// A smaller disk, or a disk or NIC no longer described, is an error: Proxmox
+// cannot shrink, and the provider never removes a disk or a card on its own.
 func ConfigChanges(old, desired VM, currentRaw map[string]any) (Changes, error) {
 	c := Changes{Keys: map[string]any{}}
 	if desired.Name != "" && desired.Name != old.Name {
@@ -26,7 +26,9 @@ func ConfigChanges(old, desired VM, currentRaw map[string]any) (Changes, error) 
 	if err := diskChanges(old.Disks, desired.Disks, &c); err != nil {
 		return Changes{}, err
 	}
-	nicChanges(old.NICs, desired.NICs, currentRaw, &c)
+	if err := nicChanges(old.NICs, desired.NICs, currentRaw, &c); err != nil {
+		return Changes{}, err
+	}
 	cloudInitChanges(old.CloudInit, desired.CloudInit, &c)
 	return c, nil
 }
@@ -57,15 +59,11 @@ func diskChanges(old, desired []Disk, c *Changes) error {
 	return nil
 }
 
-func nicChanges(old, desired []NIC, currentRaw map[string]any, c *Changes) {
-	var removed []string
+func nicChanges(old, desired []NIC, currentRaw map[string]any, c *Changes) error {
 	for _, o := range old {
 		if !slices.ContainsFunc(desired, func(n NIC) bool { return n.Slot == o.Slot }) {
-			removed = append(removed, o.Slot)
+			return fmt.Errorf("network %s is no longer described: describe it, or remove it in ProxCenter; the provider does not remove network cards", o.Slot)
 		}
-	}
-	if len(removed) > 0 {
-		c.Keys["delete"] = strings.Join(removed, ",")
 	}
 	for _, n := range desired {
 		i := slices.IndexFunc(old, func(o NIC) bool { return o.Slot == n.Slot })
@@ -77,6 +75,7 @@ func nicChanges(old, desired []NIC, currentRaw map[string]any, c *Changes) {
 			c.Keys[n.Slot] = RenderNIC(n, str(currentRaw[n.Slot]))
 		}
 	}
+	return nil
 }
 
 func nicDiffers(o, n NIC) bool {
