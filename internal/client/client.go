@@ -30,7 +30,8 @@ type Client struct {
 	// sleep waits between tries; a test seam.
 	sleep func(context.Context, time.Duration) error
 	// jitter returns a factor in [0.8, 1.2]; a test seam.
-	jitter func() float64
+	jitter  func() float64
+	vmCache vmListCache
 }
 
 // New checks the configuration and builds a client. It makes no request.
