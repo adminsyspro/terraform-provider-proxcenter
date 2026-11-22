@@ -103,7 +103,7 @@ func (p *proxcenterProvider) Configure(ctx context.Context, req provider.Configu
 }
 
 func (p *proxcenterProvider) Resources(_ context.Context) []func() resource.Resource {
-	return nil
+	return []func() resource.Resource{newVMResource}
 }
 
 func (p *proxcenterProvider) DataSources(_ context.Context) []func() datasource.DataSource {
