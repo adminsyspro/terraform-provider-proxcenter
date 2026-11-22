@@ -1,0 +1,26 @@
+---
+page_title: "{{.Name}} {{.Type}} - {{.ProviderName}}"
+subcategory: ""
+description: |-
+{{ .Description | plainmarkdown | trimspace | prefixlines "  " }}
+---
+
+# {{.Name}} ({{.Type}})
+
+{{ .Description | trimspace }}
+
+Quotas, allowed networks and the other vDC rules are enforced by ProxCenter: a refusal is shown as ProxCenter wrote it. A disk only grows and a disk or a network card that is no longer described is refused at plan, so no change in the configuration destroys a VM by accident; only a different `source` replaces it.
+
+## Example: from the catalogue
+
+{{ tffile "examples/resources/proxcenter_vm/resource.tf" }}
+
+## Example: clone of a template
+
+{{ tffile "examples/resources/proxcenter_vm/clone.tf" }}
+
+{{ .SchemaMarkdown | trimspace }}
+
+## Import
+
+{{ codefile "shell" "examples/resources/proxcenter_vm/import.sh" }}
