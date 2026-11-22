@@ -19,7 +19,7 @@ func main() {
 	flag.Parse()
 
 	err := providerserver.Serve(context.Background(), provider.New(version), providerserver.ServeOpts{
-		Address: "registry.terraform.io/adminsyspro/proxcenter",
+		Address: "registry.proxcenter.io/adminsyspro/proxcenter",
 		Debug:   debug,
 	})
 	if err != nil {

@@ -1,7 +1,7 @@
 terraform {
   required_providers {
     proxcenter = {
-      source = "adminsyspro/proxcenter"
+      source = "registry.proxcenter.io/adminsyspro/proxcenter"
     }
   }
 }

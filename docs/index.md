@@ -16,7 +16,7 @@ The token needs `vms:read` and `vms:write`; `vms:power` to run VMs, `vms:delete`
 terraform {
   required_providers {
     proxcenter = {
-      source = "adminsyspro/proxcenter"
+      source = "registry.proxcenter.io/adminsyspro/proxcenter"
     }
   }
 }
