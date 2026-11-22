@@ -120,6 +120,21 @@ func (c *Client) GetConfig(ctx context.Context, conn, node string, vmid int) (Gu
 	return cfg, nil
 }
 
+// GuestStatus reads the live power status of a guest (running, stopped...)
+// from Proxmox; unlike the /api/v1/vms list it reflects a power change at
+// once. A ProxCenter older than this route answers an APIError.
+func (c *Client) GuestStatus(ctx context.Context, conn, node string, vmid int) (string, error) {
+	var out struct {
+		Data struct {
+			Status string `json:"status"`
+		} `json:"data"`
+	}
+	if err := c.do(ctx, http.MethodGet, guestPath(conn, node, vmid)+"/status", nil, nil, &out); err != nil {
+		return "", err
+	}
+	return out.Data.Status, nil
+}
+
 // UpdateConfig writes config keys and, when the API answers 202 pending,
 // waits for the Proxmox task on the node it names.
 func (c *Client) UpdateConfig(ctx context.Context, conn, node string, vmid int, keys map[string]any) error {

@@ -25,6 +25,36 @@ var (
 
 const maxVMIDAttempts = 5
 
+// vmListLag bounds the wait for /api/v1/vms to list a guest: ProxCenter
+// serves that list from a cache refreshed every 30 s per connection, so a
+// guest created a moment ago is not in it yet.
+var vmListLag = 60 * time.Second
+
+// findVM finds a guest in the connection's list, waiting for the list to
+// catch up; nil when it is still absent after vmListLag.
+func (r *vmResource) findVM(ctx context.Context, conn string, vmid int) (*client.VMSummary, error) {
+	deadline := time.Now().Add(vmListLag)
+	wait := pollFirst
+	for {
+		vms, err := r.client.ListVMs(ctx, conn, []int{vmid})
+		if err != nil {
+			return nil, err
+		}
+		for i := range vms {
+			if vms[i].VMID == vmid && (vms[i].Type == "" || vms[i].Type == "qemu") {
+				return &vms[i], nil
+			}
+		}
+		if time.Now().Add(wait).After(deadline) {
+			return nil, nil
+		}
+		if err := sleepCtx(ctx, wait); err != nil {
+			return nil, err
+		}
+		wait = nextWait(wait)
+	}
+}
+
 func sleepCtx(ctx context.Context, d time.Duration) error {
 	t := time.NewTimer(d)
 	defer t.Stop()
@@ -250,15 +280,9 @@ func (r *vmResource) waitDeployment(ctx context.Context, id string) (client.Depl
 func (r *vmResource) createFromClone(ctx context.Context, plan vmModel, configTarget string) (int, string, bool, error) {
 	conn := plan.ConnectionID.ValueString()
 	srcID := int(plan.Source.CloneOf.ValueInt64())
-	srcs, err := r.client.ListVMs(ctx, conn, []int{srcID})
+	src, err := r.findVM(ctx, conn, srcID)
 	if err != nil {
 		return 0, "", false, fmt.Errorf("finding VM %d to clone: %w", srcID, err)
-	}
-	var src *client.VMSummary
-	for i := range srcs {
-		if srcs[i].VMID == srcID {
-			src = &srcs[i]
-		}
 	}
 	if src == nil {
 		return 0, "", false, fmt.Errorf("VM %d is not found on connection %s, or this token cannot see it", srcID, conn)
@@ -419,14 +443,14 @@ func (r *vmResource) Delete(ctx context.Context, req resource.DeleteRequest, res
 	conn, node, vmid := state.ConnectionID.ValueString(), state.Node.ValueString(), int(state.VMID.ValueInt64())
 	force := state.ForceStop.ValueBool()
 
-	if sum, err := r.client.CachedVM(ctx, conn, vmid); err == nil && sum != nil && sum.Status == "running" {
+	if r.powerStatus(ctx, conn, node, vmid) == "running" {
 		if err := r.stop(ctx, conn, node, vmid, force); err != nil {
 			resp.Diagnostics.AddError("Stopping the VM failed", err.Error())
 			return
 		}
 	}
 	err := r.client.DeleteVM(ctx, conn, node, vmid)
-	if err != nil && strings.Contains(strings.ToLower(err.Error()), "running") {
+	if err != nil && mustStopFirst(err) {
 		// The list ProxCenter reports power from may lag: stop, then retry.
 		if err := r.stop(ctx, conn, node, vmid, force); err != nil {
 			resp.Diagnostics.AddError("Stopping the VM failed", err.Error())
@@ -437,6 +461,36 @@ func (r *vmResource) Delete(ctx context.Context, req resource.DeleteRequest, res
 	if err != nil && !client.IsNotFound(err) {
 		resp.Diagnostics.AddError("Deleting the VM failed", err.Error())
 	}
+}
+
+// powerStatus is the live status of a guest, read from Proxmox through the
+// status route; a ProxCenter without that route falls back to the cached
+// list, which lags a power change by up to 30 s. "" when neither knows.
+func (r *vmResource) powerStatus(ctx context.Context, conn, node string, vmid int) string {
+	if status, err := r.client.GuestStatus(ctx, conn, node, vmid); err == nil && status != "" && status != "unknown" {
+		return status
+	}
+	if sum, err := r.client.CachedVM(ctx, conn, vmid); err == nil && sum != nil {
+		return sum.Status
+	}
+	return ""
+}
+
+// reboot restarts the VM by ACPI; a guest that ignores it (one still
+// booting, one without ACPI support) is hard stopped and started again only
+// when force_stop allows it.
+func (r *vmResource) reboot(ctx context.Context, conn, node string, vmid int, force bool) error {
+	err := r.client.Power(ctx, conn, node, vmid, "reboot")
+	if err == nil {
+		return nil
+	}
+	if !force {
+		return fmt.Errorf("the VM did not reboot by ACPI (%w); set force_stop = true to let the provider hard stop and start it", err)
+	}
+	if err := r.client.Power(ctx, conn, node, vmid, "stop"); err != nil {
+		return err
+	}
+	return r.client.Power(ctx, conn, node, vmid, "start")
 }
 
 // stop shuts the VM down by ACPI, then hard stops it only when allowed.
@@ -486,18 +540,16 @@ func (r *vmResource) readInto(ctx context.Context, conn, node string, vmid int, 
 	m.Disks = readDisks(vm.Disks, prior.Disks, importing)
 	m.Networks = readNICs(vm.NICs, prior.Networks, importing)
 
-	sum, sumErr := r.client.CachedVM(ctx, conn, vmid)
-	if sumErr == nil && sum != nil {
-		if sum.Status == "running" {
-			m.PowerState = types.StringValue("running")
-		} else {
-			m.PowerState = types.StringValue("stopped")
-		}
-	} else if m.PowerState.IsNull() || m.PowerState.IsUnknown() {
+	switch status := r.powerStatus(ctx, conn, node, vmid); {
+	case status == "running":
+		m.PowerState = types.StringValue("running")
+	case status != "":
+		m.PowerState = types.StringValue("stopped")
+	case m.PowerState.IsNull() || m.PowerState.IsUnknown():
 		m.PowerState = types.StringValue("running")
 	}
 	var ips []string
-	if sum != nil {
+	if sum, err := r.client.CachedVM(ctx, conn, vmid); err == nil && sum != nil {
 		ips = sum.IPs
 	}
 	m.CloudInit = readCloudInit(vm.CloudInit, prior.CloudInit, importing, ips)
@@ -757,7 +809,7 @@ func (r *vmResource) handlePending(ctx context.Context, conn, node string, vmid 
 	}
 	sort.Strings(keys)
 	if plan.RebootOnChange.ValueBool() {
-		if err := r.client.Power(ctx, conn, node, vmid, "reboot"); err != nil {
+		if err := r.reboot(ctx, conn, node, vmid, plan.ForceStop.ValueBool()); err != nil {
 			resp.Diagnostics.AddError("Rebooting the VM failed", err.Error())
 		}
 		return
@@ -775,25 +827,26 @@ func (r *vmResource) ImportState(ctx context.Context, req resource.ImportStateRe
 		resp.Diagnostics.AddError("Invalid import id", err.Error())
 		return
 	}
-	vms, err := r.client.ListVMs(ctx, conn, []int{vmid})
+	vm, err := r.findVM(ctx, conn, vmid)
 	if err != nil {
 		resp.Diagnostics.AddError("Finding the VM failed", err.Error())
 		return
 	}
-	node := ""
-	for _, vm := range vms {
-		if vm.VMID == vmid && (vm.Type == "" || vm.Type == "qemu") {
-			node = vm.Node
-		}
-	}
-	if node == "" {
+	if vm == nil {
 		resp.Diagnostics.AddError("VM not found", fmt.Sprintf("VM %d is not found on connection %s, or this token cannot see it.", vmid, conn))
 		return
 	}
+	node := vm.Node
 	for attr, v := range map[string]any{
 		"id": vmID(conn, int64(vmid)), "connection_id": conn, "vmid": int64(vmid), "node": node,
 		"reboot_on_change": false, "force_stop": false,
 	} {
 		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root(attr), v)...)
 	}
+}
+
+// mustStopFirst tells a delete refused because the VM still runs.
+func mustStopFirst(err error) bool {
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "running") || strings.Contains(msg, "must be stopped")
 }

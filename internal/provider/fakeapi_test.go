@@ -413,6 +413,12 @@ func (f *fakeAPI) guest(w http.ResponseWriter, r *http.Request, node string, vmi
 			}
 		}
 		reply(w, 200, out)
+	case rest == "/status" && r.Method == http.MethodGet:
+		out := map[string]any{"data": map[string]any{"status": vm.Status, "name": vm.Config["name"]}}
+		if vm.Node != node {
+			out["movedTo"] = vm.Node
+		}
+		reply(w, 200, out)
 	case rest == "/config" && r.Method == http.MethodPut:
 		for k, v := range body {
 			switch {

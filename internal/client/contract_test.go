@@ -18,6 +18,7 @@ var usedRoutes = []struct{ method, path, operationID string }{
 	{"post", "/api/v1/connections/{id}/guests/{type}/{node}/{vmid}/clone", "vm-clone"},
 	{"get", "/api/v1/connections/{id}/guests/{type}/{node}/{vmid}/config", "vm-config-get"},
 	{"put", "/api/v1/connections/{id}/guests/{type}/{node}/{vmid}/config", "vm-config-update"},
+	{"get", "/api/v1/connections/{id}/guests/{type}/{node}/{vmid}/status", "vm-status"},
 	{"post", "/api/v1/connections/{id}/guests/{type}/{node}/{vmid}/disk/resize", "vm-disk-resize"},
 	{"post", "/api/v1/connections/{id}/guests/{type}/{node}/{vmid}/disk/move", "vm-disk-move"},
 	{"post", "/api/v1/connections/{id}/guests/{type}/{node}/{vmid}/{action}", "vm-power"},
