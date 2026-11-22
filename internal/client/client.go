@@ -2,8 +2,10 @@
 package client
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
+	"math/rand/v2"
 	"net/http"
 	"strings"
 	"time"
@@ -24,6 +26,11 @@ type Client struct {
 	token string
 	ua    string
 	http  *http.Client
+	sem   chan struct{}
+	// sleep waits between tries; a test seam.
+	sleep func(context.Context, time.Duration) error
+	// jitter returns a factor in [0.8, 1.2]; a test seam.
+	jitter func() float64
 }
 
 // New checks the configuration and builds a client. It makes no request.
@@ -47,11 +54,27 @@ func New(cfg Config) (*Client, error) {
 	if ua == "" {
 		ua = "terraform-provider-proxcenter/dev"
 	}
-	return &Client{base: base, token: cfg.Token, ua: ua, http: hc}, nil
+	return &Client{
+		base: base, token: cfg.Token, ua: ua, http: hc,
+		sem:    make(chan struct{}, MaxInFlight),
+		sleep:  sleepCtx,
+		jitter: func() float64 { return 0.8 + 0.4*rand.Float64() }, //nolint:gosec // jitter, not security
+	}, nil
 }
 
 func (c *Client) newRequest(req *http.Request) {
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	req.Header.Set("User-Agent", c.ua)
 	req.Header.Set("Accept", "application/json")
+}
+
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
 }
