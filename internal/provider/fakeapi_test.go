@@ -23,6 +23,8 @@ import (
 
 // fakeVM is a guest of the fake ProxCenter.
 type fakeVM struct {
+	// Type is "qemu" (the default when empty) or "lxc".
+	Type    string
 	Node    string
 	Pool    string
 	Status  string
@@ -49,6 +51,11 @@ type fakeAPI struct {
 	deployments map[string]map[string]any
 	nextIDs     []int
 	nextIDCalls int
+	// ctTemplates are the container templates a create may name.
+	ctTemplates map[string]bool
+	// tenantCreates applies ProxCenter's vDC tenant rule: unprivileged is
+	// injected when absent, and any other value than 1 is refused.
+	tenantCreates bool
 	// cloneProvisioning and cloneFailures seed every new clone.
 	cloneProvisioning []string
 	cloneFailures     []string
@@ -71,6 +78,7 @@ func newFakeAPI(t *testing.T) *fakeAPI {
 		deployments: map[string]map[string]any{},
 		nextIDs:     []int{9105, 9106, 9107, 9108, 9109, 9110, 9111},
 		pendingKeys: map[string]bool{},
+		ctTemplates: map[string]bool{"local:vztmpl/alpine-3.24-default_20261105_amd64.tar.xz": true},
 		bodies:      map[string][]map[string]any{},
 		hooks:       map[string]func(http.ResponseWriter, *http.Request, map[string]any) bool{},
 	}
@@ -129,6 +137,15 @@ func (f *fakeAPI) allBodies(key string) []map[string]any {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]map[string]any(nil), f.bodies[key]...)
+}
+
+// withCTTemplate seeds container 9001 (a container template) on pve1.
+func (f *fakeAPI) withCTTemplate() *fakeAPI {
+	f.addVM(9001, &fakeVM{Type: "lxc", Node: "pve1", Status: "stopped", Config: map[string]any{
+		"hostname": "tpl-alpine", "template": "1", "cores": float64(1), "memory": float64(256), "swap": float64(256), "unprivileged": float64(1),
+		"rootfs": "ceph-gold:base-9001-disk-0,size=2G", "net0": "name=eth0,bridge=vmbr0,hwaddr=BC:24:11:90:01:00,ip=dhcp,type=veth",
+	}})
+	return f
 }
 
 // withTemplate seeds template 9000 on pve1, as on the lab.
@@ -200,7 +217,8 @@ func (f *fakeAPI) withVDC() *fakeAPI {
 }
 
 var (
-	reGuest   = regexp.MustCompile(`^/api/v1/connections/([^/]+)/guests/qemu/([^/]+)/(\d+)(/.*)?$`)
+	reGuest   = regexp.MustCompile(`^/api/v1/connections/([^/]+)/guests/(qemu|lxc)/([^/]+)/(\d+)(/.*)?$`)
+	reCreate  = regexp.MustCompile(`^/api/v1/connections/([^/]+)/guests/(qemu|lxc)/([^/]+)$`)
 	reNextID  = regexp.MustCompile(`^/api/v1/connections/([^/]+)/cluster/nextid$`)
 	reStorage = regexp.MustCompile(`^/api/v1/connections/([^/]+)/storage$`)
 	reVNets   = regexp.MustCompile(`^/api/v1/vdcs/([^/]+)/vnets$`)
@@ -294,10 +312,17 @@ func (f *fakeAPI) route(w http.ResponseWriter, r *http.Request, body map[string]
 			return
 		}
 		reply(w, 200, map[string]any{"data": d})
+	case reCreate.MatchString(p) && r.Method == http.MethodPost:
+		m := reCreate.FindStringSubmatch(p)
+		f.createGuest(w, m[2], m[3], body)
 	case reGuest.MatchString(p):
 		m := reGuest.FindStringSubmatch(p)
-		vmid, _ := strconv.Atoi(m[3])
-		f.guest(w, r, m[2], vmid, m[4], body)
+		vmid, _ := strconv.Atoi(m[4])
+		if vm, ok := f.vms[vmid]; ok && vm.typ() != m[2] {
+			errorReply(w, 404, fmt.Sprintf("guest %d is not a %s", vmid, m[2]))
+			return
+		}
+		f.guest(w, r, m[3], vmid, m[5], body)
 	default:
 		f.t.Errorf("fake API: unexpected %s %s", r.Method, r.URL.String())
 		errorReply(w, 404, "no route")
@@ -323,10 +348,71 @@ func (f *fakeAPI) listVMs(w http.ResponseWriter, q url.Values) {
 			continue
 		}
 		name, _ := vm.Config["name"].(string)
-		out = append(out, map[string]any{"connId": "conn1", "node": vm.Node, "vmid": strconv.Itoa(id), "name": name, "type": "qemu",
+		if name == "" {
+			name, _ = vm.Config["hostname"].(string)
+		}
+		out = append(out, map[string]any{"connId": "conn1", "node": vm.Node, "vmid": strconv.Itoa(id), "name": name, "type": vm.typ(),
 			"status": vm.Status, "template": vm.Config["template"] == "1"})
 	}
 	reply(w, 200, map[string]any{"data": map[string]any{"vms": out}})
+}
+
+func (vm *fakeVM) typ() string {
+	if vm.Type == "" {
+		return "qemu"
+	}
+	return vm.Type
+}
+
+var ctSizeRe = regexp.MustCompile(`^([^:,]+):(\d+)(,.*)?$`)
+
+// createGuest is the create route for a container (the provider creates VMs
+// through the catalogue).
+func (f *fakeAPI) createGuest(w http.ResponseWriter, typ, node string, body map[string]any) {
+	if typ != "lxc" {
+		errorReply(w, 400, "the fake creates containers only")
+		return
+	}
+	vmid := int(body["vmid"].(float64))
+	if _, taken := f.vms[vmid]; taken {
+		errorReply(w, 409, fmt.Sprintf("VMID %d is already in use in your infrastructure", vmid))
+		return
+	}
+	tpl, _ := body["ostemplate"].(string)
+	if !f.ctTemplates[tpl] {
+		errorReply(w, 500, fmt.Sprintf("volume '%s' does not exist", tpl))
+		return
+	}
+	cfg := map[string]any{"ostype": "alpine", "arch": "amd64"}
+	disk := 0
+	for k, v := range body {
+		sv := fmt.Sprint(v)
+		switch {
+		case k == "rootfs" || strings.HasPrefix(k, "mp"):
+			m := ctSizeRe.FindStringSubmatch(sv)
+			cfg[k] = fmt.Sprintf("%s:vm-%d-disk-%d%s,size=%sG", m[1], vmid, disk, m[3], m[2])
+			disk++
+		case strings.HasPrefix(k, "net"):
+			if !strings.Contains(sv, "hwaddr=") {
+				sv += fmt.Sprintf(",hwaddr=BC:24:11:C7:%02X:%02X", vmid%256, len(k))
+			}
+			cfg[k] = sv + ",type=veth"
+		case k == "vmid" || k == "ostemplate" || k == "password" || k == "ssh-public-keys" || k == "start":
+		case k == "unprivileged":
+			cfg[k] = v
+		default:
+			cfg[k] = v
+		}
+	}
+	if f.tenantCreates {
+		if v, sent := body["unprivileged"]; sent && fmt.Sprint(v) != "1" {
+			errorReply(w, 403, "Tenants may only create unprivileged containers.")
+			return
+		}
+		cfg["unprivileged"] = float64(1)
+	}
+	f.vms[vmid] = &fakeVM{Type: "lxc", Node: node, Status: "stopped", Config: cfg, Pending: map[string]any{}}
+	reply(w, 200, map[string]any{"data": fmt.Sprintf("UPID:%s:vzcreate:%d", node, vmid)})
 }
 
 func (f *fakeAPI) deploy(w http.ResponseWriter, body map[string]any) {
@@ -415,6 +501,7 @@ func (f *fakeAPI) guest(w http.ResponseWriter, r *http.Request, node string, vmi
 		reply(w, 200, out)
 	case rest == "/status" && r.Method == http.MethodGet:
 		out := map[string]any{"data": map[string]any{"status": vm.Status, "name": vm.Config["name"]}}
+		_ = node
 		if vm.Node != node {
 			out["movedTo"] = vm.Node
 		}
@@ -460,14 +547,17 @@ func (f *fakeAPI) guest(w http.ResponseWriter, r *http.Request, node string, vmi
 			cfg[k] = v
 		}
 		delete(cfg, "template")
-		if n, ok := body["name"].(string); ok {
+		if n, ok := body["name"].(string); ok && vm.typ() == "qemu" {
 			cfg["name"] = n
+		}
+		if n, ok := body["hostname"].(string); ok && vm.typ() == "lxc" {
+			cfg["hostname"] = n
 		}
 		target := vm.Node
 		if t, ok := body["target"].(string); ok && t != "" {
 			target = t
 		}
-		f.vms[newid] = &fakeVM{Node: target, Status: "stopped", Config: cfg, Pending: map[string]any{},
+		f.vms[newid] = &fakeVM{Type: vm.Type, Node: target, Status: "stopped", Config: cfg, Pending: map[string]any{},
 			Provisioning: append([]string(nil), f.cloneProvisioning...), Failures: f.cloneFailures}
 		reply(w, 200, upid)
 	case rest == "" && r.Method == http.MethodDelete:

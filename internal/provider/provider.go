@@ -103,7 +103,7 @@ func (p *proxcenterProvider) Configure(ctx context.Context, req provider.Configu
 }
 
 func (p *proxcenterProvider) Resources(_ context.Context) []func() resource.Resource {
-	return []func() resource.Resource{newVMResource}
+	return []func() resource.Resource{newVMResource, newLXCResource}
 }
 
 func (p *proxcenterProvider) DataSources(_ context.Context) []func() datasource.DataSource {

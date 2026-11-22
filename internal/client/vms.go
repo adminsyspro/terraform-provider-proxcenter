@@ -32,6 +32,7 @@ type GuestConfig struct {
 type CloneRequest struct {
 	NewID       int    `json:"newid"`
 	Name        string `json:"name,omitempty"`
+	Hostname    string `json:"hostname,omitempty"` // a container's name
 	Description string `json:"description,omitempty"`
 	Storage     string `json:"storage,omitempty"`
 	Target      string `json:"target,omitempty"`
@@ -57,8 +58,46 @@ type upidAnswer struct {
 	Node string  `json:"node"`
 }
 
-func guestPath(conn, node string, vmid int) string {
-	return fmt.Sprintf("/api/v1/connections/%s/guests/qemu/%s/%d", url.PathEscape(conn), url.PathEscape(node), vmid)
+// GuestType is the Proxmox guest type of a call: a VM or a container.
+type GuestType string
+
+const (
+	GuestQEMU GuestType = "qemu"
+	GuestLXC  GuestType = "lxc"
+)
+
+func guestPath(conn, node string, typ GuestType, vmid int) string {
+	return fmt.Sprintf("/api/v1/connections/%s/guests/%s/%s/%d", url.PathEscape(conn), url.PathEscape(string(typ)), url.PathEscape(node), vmid)
+}
+
+// CreateGuest creates a VM or a container from a Proxmox create body and
+// waits for the task. The API applies the vDC rules to the body first.
+func (c *Client) CreateGuest(ctx context.Context, conn, node string, typ GuestType, body map[string]any) error {
+	upid, taskNode, err := c.StartCreateGuest(ctx, conn, node, typ, body)
+	if err != nil || upid == "" {
+		return err
+	}
+	return c.WaitTask(ctx, conn, taskNode, upid)
+}
+
+// StartCreateGuest asks for the creation and returns its task without
+// waiting: an error means nothing was created.
+func (c *Client) StartCreateGuest(ctx context.Context, conn, node string, typ GuestType, body map[string]any) (upid, taskNode string, err error) {
+	path := fmt.Sprintf("/api/v1/connections/%s/guests/%s/%s", url.PathEscape(conn), url.PathEscape(string(typ)), url.PathEscape(node))
+	var out upidAnswer
+	err = c.do(ctx, http.MethodPost, path, nil, body, &out)
+	c.invalidate(conn)
+	if err != nil {
+		return "", "", err
+	}
+	taskNode = out.Node
+	if taskNode == "" {
+		taskNode = node
+	}
+	if out.Data != nil {
+		upid = *out.Data
+	}
+	return upid, taskNode, nil
 }
 
 // NextID asks for the next free VMID (inside the tenant range for a tenant).
@@ -73,15 +112,15 @@ func (c *Client) NextID(ctx context.Context, conn string) (int, error) {
 }
 
 // Clone clones guest vmid on node and waits for the Proxmox task.
-func (c *Client) Clone(ctx context.Context, conn, node string, vmid int, req CloneRequest) error {
-	return c.writeAndWait(ctx, http.MethodPost, guestPath(conn, node, vmid)+"/clone", nil, req, conn, node)
+func (c *Client) Clone(ctx context.Context, conn, node string, typ GuestType, vmid int, req CloneRequest) error {
+	return c.writeAndWait(ctx, http.MethodPost, guestPath(conn, node, typ, vmid)+"/clone", nil, req, conn, node)
 }
 
 // StartClone asks for a clone and returns its task without waiting: an
 // error here means Proxmox created nothing; a task means the clone exists.
-func (c *Client) StartClone(ctx context.Context, conn, node string, vmid int, req CloneRequest) (upid, taskNode string, err error) {
+func (c *Client) StartClone(ctx context.Context, conn, node string, typ GuestType, vmid int, req CloneRequest) (upid, taskNode string, err error) {
 	var out upidAnswer
-	err = c.do(ctx, http.MethodPost, guestPath(conn, node, vmid)+"/clone", nil, req, &out)
+	err = c.do(ctx, http.MethodPost, guestPath(conn, node, typ, vmid)+"/clone", nil, req, &out)
 	c.invalidate(conn)
 	if err != nil {
 		return "", "", err
@@ -97,13 +136,13 @@ func (c *Client) StartClone(ctx context.Context, conn, node string, vmid int, re
 }
 
 // GetConfig reads the config of a guest; a 404 is IsNotFound.
-func (c *Client) GetConfig(ctx context.Context, conn, node string, vmid int) (GuestConfig, error) {
+func (c *Client) GetConfig(ctx context.Context, conn, node string, typ GuestType, vmid int) (GuestConfig, error) {
 	var out struct {
 		Data         map[string]any `json:"data"`
 		MovedTo      *string        `json:"movedTo"`
 		Provisioning *Provisioning  `json:"provisioning"`
 	}
-	if err := c.do(ctx, http.MethodGet, guestPath(conn, node, vmid)+"/config", nil, nil, &out); err != nil {
+	if err := c.do(ctx, http.MethodGet, guestPath(conn, node, typ, vmid)+"/config", nil, nil, &out); err != nil {
 		return GuestConfig{}, err
 	}
 	cfg := GuestConfig{Data: out.Data, Provisioning: out.Provisioning, Pending: map[string]any{}}
@@ -123,13 +162,13 @@ func (c *Client) GetConfig(ctx context.Context, conn, node string, vmid int) (Gu
 // GuestStatus reads the live power status of a guest (running, stopped...)
 // from Proxmox; unlike the /api/v1/vms list it reflects a power change at
 // once. A ProxCenter older than this route answers an APIError.
-func (c *Client) GuestStatus(ctx context.Context, conn, node string, vmid int) (string, error) {
+func (c *Client) GuestStatus(ctx context.Context, conn, node string, typ GuestType, vmid int) (string, error) {
 	var out struct {
 		Data struct {
 			Status string `json:"status"`
 		} `json:"data"`
 	}
-	if err := c.do(ctx, http.MethodGet, guestPath(conn, node, vmid)+"/status", nil, nil, &out); err != nil {
+	if err := c.do(ctx, http.MethodGet, guestPath(conn, node, typ, vmid)+"/status", nil, nil, &out); err != nil {
 		return "", err
 	}
 	return out.Data.Status, nil
@@ -137,13 +176,13 @@ func (c *Client) GuestStatus(ctx context.Context, conn, node string, vmid int) (
 
 // UpdateConfig writes config keys and, when the API answers 202 pending,
 // waits for the Proxmox task on the node it names.
-func (c *Client) UpdateConfig(ctx context.Context, conn, node string, vmid int, keys map[string]any) error {
+func (c *Client) UpdateConfig(ctx context.Context, conn, node string, typ GuestType, vmid int, keys map[string]any) error {
 	var out struct {
 		Pending bool   `json:"pending"`
 		UPID    string `json:"upid"`
 		Node    string `json:"node"`
 	}
-	err := c.do(ctx, http.MethodPut, guestPath(conn, node, vmid)+"/config", nil, keys, &out)
+	err := c.do(ctx, http.MethodPut, guestPath(conn, node, typ, vmid)+"/config", nil, keys, &out)
 	c.invalidate(conn)
 	if err != nil {
 		return err
@@ -159,26 +198,26 @@ func (c *Client) UpdateConfig(ctx context.Context, conn, node string, vmid int, 
 }
 
 // ResizeDisk sets a disk to size (absolute, e.g. "80G") and waits.
-func (c *Client) ResizeDisk(ctx context.Context, conn, node string, vmid int, disk, size string) error {
-	return c.writeAndWait(ctx, http.MethodPost, guestPath(conn, node, vmid)+"/disk/resize", nil,
+func (c *Client) ResizeDisk(ctx context.Context, conn, node string, typ GuestType, vmid int, disk, size string) error {
+	return c.writeAndWait(ctx, http.MethodPost, guestPath(conn, node, typ, vmid)+"/disk/resize", nil,
 		map[string]any{"disk": disk, "size": size}, conn, node)
 }
 
 // MoveDisk moves a disk to storage, deleting the source, and waits.
-func (c *Client) MoveDisk(ctx context.Context, conn, node string, vmid int, disk, storage string) error {
-	return c.writeAndWait(ctx, http.MethodPost, guestPath(conn, node, vmid)+"/disk/move", nil,
+func (c *Client) MoveDisk(ctx context.Context, conn, node string, typ GuestType, vmid int, disk, storage string) error {
+	return c.writeAndWait(ctx, http.MethodPost, guestPath(conn, node, typ, vmid)+"/disk/move", nil,
 		map[string]any{"disk": disk, "storage": storage, "deleteSource": true}, conn, node)
 }
 
 // Power runs start, stop, shutdown or reboot and waits.
-func (c *Client) Power(ctx context.Context, conn, node string, vmid int, action string) error {
-	return c.writeAndWait(ctx, http.MethodPost, guestPath(conn, node, vmid)+"/"+url.PathEscape(action), nil, nil, conn, node)
+func (c *Client) Power(ctx context.Context, conn, node string, typ GuestType, vmid int, action string) error {
+	return c.writeAndWait(ctx, http.MethodPost, guestPath(conn, node, typ, vmid)+"/"+url.PathEscape(action), nil, nil, conn, node)
 }
 
 // DeleteVM destroys a stopped guest with its unreferenced disks and waits.
-func (c *Client) DeleteVM(ctx context.Context, conn, node string, vmid int) error {
+func (c *Client) DeleteVM(ctx context.Context, conn, node string, typ GuestType, vmid int) error {
 	q := url.Values{"purge": {"1"}, "destroy-unreferenced-disks": {"1"}}
-	return c.writeAndWait(ctx, http.MethodDelete, guestPath(conn, node, vmid), q, nil, conn, node)
+	return c.writeAndWait(ctx, http.MethodDelete, guestPath(conn, node, typ, vmid), q, nil, conn, node)
 }
 
 func (c *Client) writeAndWait(ctx context.Context, method, path string, q url.Values, body any, conn, node string) error {
