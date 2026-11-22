@@ -353,7 +353,9 @@ func (r *vmResource) Read(ctx context.Context, req resource.ReadRequest, resp *r
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	m, found, err := r.readInto(ctx, state.ConnectionID.ValueString(), state.Node.ValueString(), int(state.VMID.ValueInt64()), state, false)
+	// An import leaves only the identity in state: read everything.
+	importing := state.Name.IsNull()
+	m, found, err := r.readInto(ctx, state.ConnectionID.ValueString(), state.Node.ValueString(), int(state.VMID.ValueInt64()), state, importing)
 	if err != nil {
 		resp.Diagnostics.AddError("Reading the VM failed", err.Error())
 		return
@@ -511,35 +513,18 @@ func readCloudInit(have *vmconfig.CloudInit, prior *cloudInitModel, importing bo
 	if have == nil {
 		have = &vmconfig.CloudInit{}
 	}
-	m := cloudInitModel{
-		User: types.StringNull(), SSHKeys: types.ListNull(types.StringType), Gateway: types.StringNull(),
-		Nameserver: types.StringNull(), SearchDomain: types.StringNull(), PasswordWO: types.StringNull(), PasswordWOVersion: types.Int64Null(),
-	}
+	m := cloudInitModel{PasswordWOVersion: types.Int64Null()}
 	if prior != nil {
-		m = *prior
-		m.PasswordWO = types.StringNull()
+		m.PasswordWOVersion = prior.PasswordWOVersion
 	}
-	// A field is read back when the user describes it (or on import).
-	described := func(v interface{ IsNull() bool }) bool { return importing || !v.IsNull() }
-	if described(m.User) {
-		m.User = optionalString(have.User)
+	// Every field is optional and computed: read back as the VM has it.
+	m.PasswordWO = types.StringNull()
+	m.User = optionalString(have.User)
+	m.SSHKeys = types.ListNull(types.StringType)
+	if len(have.SSHKeys) > 0 {
+		m.SSHKeys = stringList(have.SSHKeys)
 	}
-	if described(m.SSHKeys) {
-		if have.SSHKeys == nil && importing {
-			m.SSHKeys = types.ListNull(types.StringType)
-		} else {
-			m.SSHKeys = stringList(have.SSHKeys)
-		}
-	}
-	if described(m.Gateway) {
-		m.Gateway = optionalString(have.Gateway)
-	}
-	if described(m.Nameserver) {
-		m.Nameserver = optionalString(have.Nameserver)
-	}
-	if described(m.SearchDomain) {
-		m.SearchDomain = optionalString(have.SearchDomain)
-	}
+	m.Gateway, m.Nameserver, m.SearchDomain = optionalString(have.Gateway), optionalString(have.Nameserver), optionalString(have.SearchDomain)
 	m.IP = optionalString(have.IP)
 	m.IPAddress = types.StringNull()
 	switch {
@@ -574,8 +559,12 @@ func nullUnknowns(m *vmModel) {
 		}
 	}
 	if ci := m.CloudInit; ci != nil {
-		str(&ci.IP)
-		str(&ci.IPAddress)
+		for _, v := range []*types.String{&ci.User, &ci.IP, &ci.IPAddress, &ci.Gateway, &ci.Nameserver, &ci.SearchDomain} {
+			str(v)
+		}
+		if ci.SSHKeys.IsUnknown() {
+			ci.SSHKeys = types.ListNull(types.StringType)
+		}
 		ci.PasswordWO = types.StringNull()
 	}
 }
@@ -584,6 +573,33 @@ func (r *vmResource) Update(_ context.Context, _ resource.UpdateRequest, resp *r
 	resp.Diagnostics.AddError("Not implemented", "update")
 }
 
-func (r *vmResource) ImportState(_ context.Context, _ resource.ImportStateRequest, resp *resource.ImportStateResponse) {
-	resp.Diagnostics.AddError("Not implemented", "import")
+// ImportState takes <connection_id>/<vmid>; the node comes from the VM list
+// once, then Read fills every attribute from the config.
+func (r *vmResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	conn, vmid, err := parseVMID(req.ID)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid import id", err.Error())
+		return
+	}
+	vms, err := r.client.ListVMs(ctx, conn, []int{vmid})
+	if err != nil {
+		resp.Diagnostics.AddError("Finding the VM failed", err.Error())
+		return
+	}
+	node := ""
+	for _, vm := range vms {
+		if vm.VMID == vmid && (vm.Type == "" || vm.Type == "qemu") {
+			node = vm.Node
+		}
+	}
+	if node == "" {
+		resp.Diagnostics.AddError("VM not found", fmt.Sprintf("VM %d is not found on connection %s, or this token cannot see it.", vmid, conn))
+		return
+	}
+	for attr, v := range map[string]any{
+		"id": vmID(conn, int64(vmid)), "connection_id": conn, "vmid": int64(vmid), "node": node,
+		"reboot_on_change": false, "force_stop": false,
+	} {
+		resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root(attr), v)...)
+	}
 }

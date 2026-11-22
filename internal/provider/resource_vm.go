@@ -15,6 +15,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64planmodifier"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/listplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/objectplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
@@ -160,13 +161,15 @@ func (r *vmResource) Schema(ctx context.Context, _ resource.SchemaRequest, resp 
 				}},
 			},
 			"cloud_init": schema.SingleNestedBlock{
+				Description: "Cloud-init settings. A field left unset keeps the value the VM has.",
 				Attributes: map[string]schema.Attribute{
-					"user":          schema.StringAttribute{Optional: true},
-					"ssh_keys":      schema.ListAttribute{Optional: true, ElementType: types.StringType},
+					"user": schema.StringAttribute{Optional: true, Computed: true, PlanModifiers: keep},
+					"ssh_keys": schema.ListAttribute{Optional: true, Computed: true, ElementType: types.StringType,
+						PlanModifiers: []planmodifier.List{listplanmodifier.UseStateForUnknown()}},
 					"ip":            schema.StringAttribute{Optional: true, Computed: true, Description: "dhcp or CIDR; unset lets ProxCenter decide (an IPAM VNet allocates one).", PlanModifiers: keep},
-					"gateway":       schema.StringAttribute{Optional: true},
-					"nameserver":    schema.StringAttribute{Optional: true},
-					"search_domain": schema.StringAttribute{Optional: true},
+					"gateway":       schema.StringAttribute{Optional: true, Computed: true, PlanModifiers: keep},
+					"nameserver":    schema.StringAttribute{Optional: true, Computed: true, PlanModifiers: keep},
+					"search_domain": schema.StringAttribute{Optional: true, Computed: true, PlanModifiers: keep},
 					"ip_address":    schema.StringAttribute{Computed: true, Description: "Address the VM got.", PlanModifiers: keep},
 					"password_wo": schema.StringAttribute{Optional: true, Sensitive: true, WriteOnly: true,
 						Description: "Cloud-init password, never stored in state (Terraform 1.11+). Change password_wo_version to send a new one."},
@@ -316,10 +319,14 @@ func modelToVM(m vmModel) vmconfig.VM {
 		vm.NICs = append(vm.NICs, nic)
 	}
 	if ci := m.CloudInit; ci != nil {
-		out := &vmconfig.CloudInit{User: ci.User.ValueString(), Gateway: ci.Gateway.ValueString(), Nameserver: ci.Nameserver.ValueString(), SearchDomain: ci.SearchDomain.ValueString()}
-		if !ci.IP.IsUnknown() {
-			out.IP = ci.IP.ValueString()
+		// Unknown (unset, computed) fields read as empty: not described.
+		known := func(v types.String) string {
+			if v.IsUnknown() {
+				return ""
+			}
+			return v.ValueString()
 		}
+		out := &vmconfig.CloudInit{User: known(ci.User), Gateway: known(ci.Gateway), Nameserver: known(ci.Nameserver), SearchDomain: known(ci.SearchDomain), IP: known(ci.IP)}
 		if !ci.SSHKeys.IsNull() && !ci.SSHKeys.IsUnknown() {
 			out.SSHKeys = []string{}
 			for _, e := range ci.SSHKeys.Elements() {

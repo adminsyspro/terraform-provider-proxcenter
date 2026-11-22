@@ -89,9 +89,14 @@ func (f *fakeAPI) config(hcl string) string {
 	return fmt.Sprintf("provider \"proxcenter\" {\n  endpoint = %q\n  token    = \"pxc_test\"\n}\n\n%s", f.srv.URL, hcl)
 }
 
+// hook sets (or, with nil, removes) the handler of one route.
 func (f *fakeAPI) hook(method, path string, h func(w http.ResponseWriter, r *http.Request, body map[string]any) bool) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if h == nil {
+		delete(f.hooks, method+" "+path)
+		return
+	}
 	f.hooks[method+" "+path] = h
 }
 
